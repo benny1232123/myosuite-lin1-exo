@@ -364,7 +364,11 @@ def attach_lin1_exo(
     flexion_range: tuple[float, float] = (-1.6, 1.6),
     roll_range: tuple[float, float] = (-1.2, 1.2),
     slot_range: tuple[float, float] = (-0.06, 0.06),
-    thigh_radius: float = 0.038,
+    # The cuff mesh is a ~52 mm radius C-arc centred on this anchor, so its inner
+    # edge sits at thigh_radius - 52.3 mm from the femur axis.  The femur mesh
+    # reaches ~39 mm outboard at the cuff's height, so the anchor has to sit far
+    # enough outboard that the arc clears the bone instead of burying in it.
+    thigh_radius: float = 0.100,
     slot_mass: float = 0.01,
     weld_solref: tuple[float, float] = (0.01, 1.0),
     weld_solimp: tuple[float, ...] = (0.9, 0.95, 0.001, 0.5, 2.0),
