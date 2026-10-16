@@ -111,7 +111,7 @@ _CRANK_PIN_MM = {
 # CAD is built on - with the pin completely free the rod wandered across the body.  It is
 # stiff on purpose: with a soft spring the strap load parks the pin a couple of degrees off
 # centre all through the gait, which walks the cuff's end ~20 mm off the thigh line.
-_CRANK_PIN_RANGE = (-0.45, 0.45)
+_CRANK_PIN_RANGE = (-0.15, 0.15)
 _CRANK_PIN_FRICTIONLOSS = 0.0
 _CRANK_PIN_STIFFNESS = 20.0
 
