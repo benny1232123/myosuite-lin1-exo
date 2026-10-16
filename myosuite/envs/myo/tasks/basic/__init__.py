@@ -478,6 +478,49 @@ _reg(
     },
 )
 
+# Lin-I hip exoskeleton walking (zero assistance) ==============================
+# Same task/obs/reward as myoLegWalk-v0 with the 'Lin-I' exoskeleton added to the
+# physics model: 2 hinges per side + soft cuff welds.  1500 steps = 15 s of walking.
+_reg(
+    env_id="myoLegWalkExo-v0",
+    entry_point="myosuite.envs.myo.tasks.basic.leg.walk_exo:LegWalkExoEnvV0",
+    max_episode_steps=1500,
+    kwargs={
+        "model_path": str(_resolve_leg_xml("myolegs_with_torso.xml")),
+        "normalize_act": True,
+        "min_height": 0.8,
+        "max_rot": 0.8,
+        "hip_period": 100,
+        "reset_type": "init",
+        "target_x_vel": 0.0,
+        "target_y_vel": 1.2,
+        "target_rot": None,
+        "exo_locked": False,  # physical chain: hinges + cuff welds
+        "exo_weld": True,
+        "exo_damping": 0.05,
+    },
+)
+
+# Reference condition: exo DoFs removed, i.e. a rigid 3.1 kg inertial load on the
+# pelvis and thighs with no constraint coupling at all.
+_reg(
+    env_id="myoLegWalkExoLocked-v0",
+    entry_point="myosuite.envs.myo.tasks.basic.leg.walk_exo:LegWalkExoEnvV0",
+    max_episode_steps=1500,
+    kwargs={
+        "model_path": str(_resolve_leg_xml("myolegs_with_torso.xml")),
+        "normalize_act": True,
+        "min_height": 0.8,
+        "max_rot": 0.8,
+        "hip_period": 100,
+        "reset_type": "init",
+        "target_x_vel": 0.0,
+        "target_y_vel": 1.2,
+        "target_rot": None,
+        "exo_locked": True,
+    },
+)
+
 # Rough Terrain Walking  ==============================
 _reg(
     env_id="myoLegRoughTerrainWalk-v0",

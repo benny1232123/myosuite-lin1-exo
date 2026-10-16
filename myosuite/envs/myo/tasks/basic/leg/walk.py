@@ -58,6 +58,10 @@ class LegWalkEnvV0(CtrlStageHost, MyoGymnasiumEnv, EzPickle):
         L4DC-2019 | https://sites.google.com/view/myosuite
     """
 
+    def _build_model(self, model_path: str) -> tuple[mujoco.MjModel, mujoco.MjSpec]:
+        """Compose the physics model. Subclasses may register extra spec transforms."""
+        return ModelBuilder.from_xml_file(model_path).build()
+
     def __init__(
         self,
         model_path: str,
@@ -99,7 +103,7 @@ class LegWalkEnvV0(CtrlStageHost, MyoGymnasiumEnv, EzPickle):
             **kwargs,
         )
 
-        self.model, self._mj_spec = ModelBuilder.from_xml_file(model_path).build()
+        self.model, self._mj_spec = self._build_model(model_path)
         self.data = mujoco.MjData(self.model)
         self._ctrl_dt = float(self.model.opt.timestep * frame_skip)
 
