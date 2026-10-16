@@ -105,10 +105,22 @@ _CRANK_PIN_MM = {
     "r": (148.9, -184.1, -81.1),
     "l": (149.7, 184.9, -77.8),
 }
-# The pin is co-axial with the motor, so it is a slop joint rather than a second hip: a
-# short travel plus friction keeps the visible rotation with the motor where it belongs.
-_CRANK_PIN_RANGE = (-0.15, 0.15)
-_CRANK_PIN_FRICTIONLOSS = 0.5
+# The pin is a real clevis hinge: the rod swings on it as the strap drags it along the
+# thigh, so the travel is the hardware's, not zero.  The centring spring pulls it back to
+# the straight CAD pose, which is also what keeps the two-link mechanism on the branch the
+# CAD is built on - with the pin completely free the rod wandered across the body.  It is
+# stiff on purpose: with a soft spring the strap load parks the pin a couple of degrees off
+# centre all through the gait, which walks the cuff's end ~20 mm off the thigh line.
+_CRANK_PIN_RANGE = (-0.45, 0.45)
+_CRANK_PIN_FRICTIONLOSS = 0.0
+_CRANK_PIN_STIFFNESS = 20.0
+
+# The hip it is worn on is not a single-axis joint, so the exo's hip is two DOF: the
+# module's axle gives flexion, and the assembly also swings in the frontal plane.  Without
+# that second DOF the whole chain is trapped in the sagittal plane and cannot follow the
+# thigh, and the cuff strap tore open by up to 70 mm every stride.
+_HIP_ABDUCTION_RANGE = (-0.35, 0.35)
+_ABDUCTION_SIGN = {"r": -1.0, "l": 1.0}   # sign per side, so positive = outward
 
 # Deliberately avoids red: MyoSuite draws the muscle wrap geoms in red, and a red
 # exoskeleton merges into them in every render.  The five groups are also ordered by
@@ -354,8 +366,8 @@ def attach_lin1_exo(
     slot_range: tuple[float, float] = (-0.06, 0.06),
     thigh_radius: float = 0.038,
     slot_mass: float = 0.01,
-    weld_solref: tuple[float, float] = (0.02, 1.0),
-    weld_solimp: tuple[float, ...] = (0.05, 0.05, 0.001, 0.5, 2.0),
+    weld_solref: tuple[float, float] = (0.01, 1.0),
+    weld_solimp: tuple[float, ...] = (0.9, 0.95, 0.001, 0.5, 2.0),
     geom_group: int = 1,
     add_visuals: bool = True,
     visual_style: str = "mesh",
@@ -374,14 +386,11 @@ def attach_lin1_exo(
         flexion_range: hip flexion/extension limits (human hip flexion range plus a small
             margin, so the strap stretch cannot push the exo hinge into its stop).
         roll_range: passive link roll limits (pin-in-slot travel, rad).
-        weld_solref: weld constraint ``(timeconst, dampratio)``; finite stiffness
-            absorbs the single redundant constraint of the closed chain.
-        weld_solimp: weld constraint impedance parameters.  The low ``dmax`` is
-            deliberate: the exo has no hip-adduction DOF, so the cuff site sits ~17 mm
-            off the exo flexion circle whenever the hip is adducted.  A near-rigid weld
-            would answer that 17 mm with a ~kN force and topple the walker within ~1 s;
-            the default behaves like a padded thigh strap (the published baseline policy
-            then walks 15 s unchanged).
+        weld_solref: thigh strap constraint ``(timeconst, dampratio)``.  The time constant
+            is kept near the solver timestep: with the hip abduction DOF the cuff target is
+            kinematically reachable (the reset gap is exactly zero), so the strap tracks the
+            thigh instead of lagging 20-40 mm behind it on every stride.
+        weld_solimp: thigh strap impedance parameters - a stiff, padded strap.
         geom_group: MuJoCo geom group used for the exo visuals.
         add_visuals: add the exo visuals at all.
         visual_style: ``"mesh"`` draws the real CAD tessellation (one STL per rigid-body
@@ -490,6 +499,9 @@ def attach_lin1_exo(
         # assembly keeps the shape it was designed with.
         exo_axis = _R_CAD_TO_PELVIS @ hip_cad            # exo hinge, exo-frame coords
         exo_lateral = _R_CAD_TO_PELVIS @ axis_cad        # exo hinge axis, pelvis coords
+        # the abduction hinge turns about the fore-aft axis: the CAD +X is anterior, and the
+        # sign is mirrored per side so a positive joint value always swings the leg outward
+        exo_forward = _ABDUCTION_SIGN[side] * (_R_CAD_TO_PELVIS @ np.array([1.0, 0.0, 0.0]))
         # The CAD link direction carries a 12.5 deg medial tilt: the link leaves the hip
         # module (114 mm outboard) and converges on the thigh surface at the cuff, which is
         # how the machine is worn.  Keeping the tilt is what lands the cuff on the leg; the
@@ -570,6 +582,19 @@ def attach_lin1_exo(
                 )
 
         if not locked:
+            # declared first, so its anchor and axis stay in the pelvis frame: the hip
+            # module swings with the leg instead of levering the strap off the thigh
+            jab = crank.add_joint(
+                name=f"exo_hip_abduction_{side}",
+                type=mujoco.mjtJoint.mjJNT_HINGE,
+                pos=np.zeros(3),
+                axis=exo_forward,
+                range=np.asarray(_HIP_ABDUCTION_RANGE, dtype=np.float64),
+                limited=True,
+                damping=float(damping),
+                armature=float(armature),
+                frictionloss=0.0,
+            )
             j1 = crank.add_joint(
                 name=f"exo_hip_flexion_{side}",
                 type=mujoco.mjtJoint.mjJNT_HINGE,
@@ -581,9 +606,9 @@ def attach_lin1_exo(
                 armature=float(armature),
                 frictionloss=0.0,
             )
-            # the long link hangs off the crank's pin: a real passive hinge, but the servo
-            # does not drive it, so it gets a short travel and friction to keep it from
-            # stealing the rotation the motor itself should be seen doing
+            # the long link hangs off the crank's pin: a real clevis hinge which the thigh
+            # strap drags around, so it turns as the leg swings.  The spring only picks the
+            # assembly branch, so the turn stays visible instead of wandering.
             j1b = link.add_joint(
                 name=f"exo_crank_pin_{side}",
                 type=mujoco.mjtJoint.mjJNT_HINGE,
@@ -591,7 +616,9 @@ def attach_lin1_exo(
                 axis=exo_lateral,
                 range=np.asarray(_CRANK_PIN_RANGE, dtype=np.float64),
                 limited=True,
-                damping=max(2.0, float(damping)),
+                stiffness=float(_CRANK_PIN_STIFFNESS),
+                springref=0.0,
+                damping=max(5.0, float(damping)),
                 armature=float(armature),
                 frictionloss=float(_CRANK_PIN_FRICTIONLOSS),
             )
@@ -620,8 +647,8 @@ def attach_lin1_exo(
                 armature=float(armature),
                 frictionloss=0.0,
             )
-            joint_names += [j1.name, j1b.name, j2.name, j3.name]
-            added_dof += 4
+            joint_names += [jab.name, j1.name, j1b.name, j2.name, j3.name]
+            added_dof += 5
 
             if weld:
                 # the strap sits on the thigh surface, one thigh radius outboard of the

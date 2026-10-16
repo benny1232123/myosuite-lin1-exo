@@ -93,14 +93,15 @@ def test_exo_adds_nine_bodies_with_exactly_the_cad_mass(exo_env, base_env) -> No
     )
 
 
-def test_exo_chain_is_four_passive_dofs_per_side(exo_env, base_env) -> None:
+def test_exo_chain_is_five_passive_dofs_per_side(exo_env, base_env) -> None:
     joints = exo_env.exo_joint_names()
-    assert len(joints) == 8
-    assert exo_env.model.nq == base_env.model.nq + 8
-    assert exo_env.model.nv == base_env.model.nv + 8
+    assert len(joints) == 10
+    assert exo_env.model.nq == base_env.model.nq + 10
+    assert exo_env.model.nv == base_env.model.nv + 10
     assert exo_env.model.nu == base_env.model.nu, "zero assistance must not add actuators"
     for side in SIDES:
-        for prefix in ("exo_hip_flexion", "exo_crank_pin", "exo_slot", "exo_axial_roll"):
+        for prefix in ("exo_hip_abduction", "exo_hip_flexion", "exo_crank_pin",
+                       "exo_slot", "exo_axial_roll"):
             assert any(j.startswith(f"{prefix}_{side}") for j in joints), f"{prefix}_{side}"
     for name in joints:
         if "_slot_" in name:
@@ -117,7 +118,8 @@ def test_cuff_weld_couples_the_exo_chain_to_the_thigh(exo_env) -> None:
     for side in SIDES:
         eq = model.equality(f"exo_weld_{side}")
         # a thigh strap presses the cuff against the thigh but lets it rotate, so the
-        # coupling is a point (3 rows) for a cuff chain that has 3 DOF - not a weld
+        # coupling is a point (3 rows) for a cuff chain that has four translating DOF
+        # (hip abduction, hip flexion, crank pin, slot) - not a weld
         assert eq.type == mujoco.mjtEq.mjEQ_CONNECT
         assert model.eq_objtype[eq.id] == mujoco.mjtObj.mjOBJ_SITE
         cuff = model.site(f"exo_cuff_site_{side}").id
