@@ -55,6 +55,7 @@ class LegWalkExoEnvV0(LegWalkEnvV0):
         exo_weld_solimp: tuple[float, ...] = (0.9, 0.95, 0.001, 0.5, 2.0),
         exo_visual_style: str = "mesh",
         exo_mesh_dir: str | None = None,
+        exo_thigh_radius: float = None,
         **kwargs: Any,
     ) -> None:
         self._exo_kwargs: dict[str, Any] = {
@@ -63,6 +64,7 @@ class LegWalkExoEnvV0(LegWalkEnvV0):
             "exo_weld": bool(exo_weld),
             "exo_damping": float(exo_damping),
             "exo_armature": float(exo_armature),
+            "exo_thigh_radius": exo_thigh_radius,
             "exo_weld_solref": tuple(exo_weld_solref),
             "exo_weld_solimp": tuple(exo_weld_solimp),
             "exo_visual_style": str(exo_visual_style),
@@ -93,6 +95,9 @@ class LegWalkExoEnvV0(LegWalkEnvV0):
         meta: dict[str, Any] = {}
 
         def _attach(spec: mujoco.MjSpec) -> mujoco.MjSpec:
+            attach_kwargs = {}
+            if self._exo_kwargs["exo_thigh_radius"] is not None:
+                attach_kwargs["thigh_radius"] = float(self._exo_kwargs["exo_thigh_radius"])
             meta.update(
                 attach_lin1_exo(
                     spec,
@@ -103,6 +108,7 @@ class LegWalkExoEnvV0(LegWalkEnvV0):
                     armature=self._exo_kwargs["exo_armature"],
                     weld_solref=self._exo_kwargs["exo_weld_solref"],
                     weld_solimp=self._exo_kwargs["exo_weld_solimp"],
+                    **attach_kwargs,
                     visual_style=self._exo_kwargs["exo_visual_style"],
                     mesh_dir=self._exo_kwargs["exo_mesh_dir"],
                 )
