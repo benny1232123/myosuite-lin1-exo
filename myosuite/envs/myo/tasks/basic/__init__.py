@@ -486,7 +486,8 @@ _reg(
     entry_point="myosuite.envs.myo.tasks.basic.leg.walk_exo:LegWalkExoEnvV0",
     max_episode_steps=1500,
     kwargs={
-        "model_path": str(_resolve_leg_xml("myolegs_with_torso.xml")),
+        # exo-only host XML: same model and terrain, clean studio scene instead of the room
+        "model_path": str(_resolve_leg_xml("myolegs_with_torso_exo.xml")),
         "normalize_act": True,
         "min_height": 0.8,
         "max_rot": 0.8,
@@ -508,7 +509,8 @@ _reg(
     entry_point="myosuite.envs.myo.tasks.basic.leg.walk_exo:LegWalkExoEnvV0",
     max_episode_steps=1500,
     kwargs={
-        "model_path": str(_resolve_leg_xml("myolegs_with_torso.xml")),
+        # exo-only host XML: same model and terrain, clean studio scene instead of the room
+        "model_path": str(_resolve_leg_xml("myolegs_with_torso_exo.xml")),
         "normalize_act": True,
         "min_height": 0.8,
         "max_rot": 0.8,

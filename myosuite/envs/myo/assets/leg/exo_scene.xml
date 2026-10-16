@@ -1,0 +1,32 @@
+<mujoco model="Lin-I exoskeleton studio scene">
+    <!-- The exoskeleton environments include this instead of myo_sim's
+         myosuite_scene.xml.  The floor plane and the pedestal are the geoms the
+         feet actually touch, so both are kept exactly as they are there; only the
+         room backdrop mesh, the logo and the wooden floor texture are replaced by
+         builtin textures. -->
+
+    <compiler angle="radian" meshdir=".." texturedir=".."/>
+    <asset>
+        <texture name="texsky" type="skybox" builtin="gradient" width="512" height="256" rgb1="0.72 0.80 0.90" rgb2="0.10 0.12 0.16"/>
+
+        <texture name="texfloor" type="2d" builtin="checker" height="512" width="512" rgb1="0.80 0.81 0.83" rgb2="0.68 0.69 0.72"/>
+        <material name="matfloor" reflectance="0.01" texture="texfloor" texrepeat="14 14" texuniform="true"/>
+    </asset>
+
+    <statistic extent="5" center="0 -1 1"/>
+
+    <visual>
+        <scale light=".05" framewidth=".005"/>
+        <headlight ambient=".5 .5 .5" diffuse="0.50 0.50 0.50" specular="0.50 0.50 0.50"/>
+        <global elevation="-15"/>
+        <rgba actuator='.7 .4 .4 1' actuatorpositive='1 0 0 1' actuatornegative='.175 .1 .1 1'/>
+    </visual>
+
+    <worldbody>
+        <light directional="false" diffuse=".5 .5 .5" specular="0.25 0.25 0.25" pos="0 -3 3" dir="0 1 -1" mode="trackcom"/>
+        <camera name="side_view" pos="-3 0 2.25" xyaxes="0 -1 0 1 0 2" mode="trackcom"/>
+        <camera name="front_view" pos="0 -3 2.25" xyaxes="1 0 0 0 1 2" mode="trackcom"/>
+
+        <geom name="floor" pos="0 0 0" size="7 7 .1" conaffinity="1" contype="1" type="plane" material="matfloor" condim="3" group="1"/>
+    </worldbody>
+</mujoco>
