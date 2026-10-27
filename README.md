@@ -18,10 +18,6 @@ Lin-I 髋部外骨骼在 MyoSuite 人体肌骨模型上的 CAD 级仿真，以�
 
 ## 图片与视频
 
-髋部模块近景（电机壳、端盖圆盘、曲折杆的叉耳、长杆与腿环）：
-
-<img src="docs/images/hip_detail.png" width="460" alt="髋部模块近景">
-
 15 秒行走的一个步态循环（从左到右）：
 
 <img src="docs/images/gait_strip.png" width="760" alt="步态循环">
