@@ -1,39 +1,31 @@
-# Lin-I — a passive hip exoskeleton in MuJoCo / MyoSuite
+# Lin-I 被动髋外骨骼 · MuJoCo / MyoSuite 仿真
 
-A CAD-accurate simulation of the **Lin-I passive hip exoskeleton** worn by the MyoSuite
-musculoskeletal walker, plus the tooling to wear it, watch it, and teach a controller to walk in it
-with the device completely unpowered.
-
-The device is a hip module on each side of a waist frame: a drum with a flexion and an abduction
-hinge, a crank fork that seats on the drum's end cover, a parallel thigh link hanging off the
-clevis pin, a pin-in-slot slide and a thigh strap that couples the link to the femur through a
-compliant weld. Nothing actuates it — the joints are passive, and the strap drags the link along
-the thigh as the human walks.
+Lin-I 髋部外骨骼在 MyoSuite 人体肌骨模型上的 CAD 级仿真，以及配套的佩戴摆放、可视化、验收和训练工具。装置本身**完全被动**：每侧一个髋模块，模块里有屈曲与外展两个铰链、坐在鼓形端盖上的曲折杆（叉架）、挂在销轴上的平行大腿长杆、销-槽滑移副，以及把连杆耦合到股骨的柔性焊缝（大腿绑带）。没有任何电机输出，行走时由绑带拖着长杆沿大腿运动。
 
 ---
 
-## What it does
+## 仓库内容
 
 | | |
 |---|---|
-| **Env** | `myoLegWalkExo-v0` — `myoLegWalk-v0` + Lin-I; `myoLegWalkExoLocked-v0` draws the same device rigidly for comparison |
-| **Device** | 5 passive DOF per side (abduction, flexion, crank pin, slot, link roll), 3 kg lumped onto the CAD mass distribution, one compliant point weld per side (thigh strap) |
-| **Policy** | `walk_exo_policy.zip` — PPO fine-tune of the published `myoLegWalk-v0` policy, zero assistance |
-| **Acceptance** | 1500 / 1500 control steps (15 s), 21.9 m, 0 Nm at both exo hinges, alternating foot contacts |
-| **Tests** | `myosuite/tests/test_lin1_exo.py` — 17 checks (CAD groups, weld coupling, clevis seating, reset welds, strap drag) |
+| **环境** | `myoLegWalkExo-v0`：`myoLegWalk-v0` + Lin-I；`myoLegWalkExoLocked-v0` 用刚性方式画出同一装置，便于对照 |
+| **装置** | 每侧 5 个被动自由度（外展、屈曲、曲柄销、滑槽、连杆滚转），3 kg 按 CAD 质量分布附加，每侧一条柔性点焊缝（大腿绑带） |
+| **策略** | `walk_exo_policy.zip`：从官方 `myoLegWalk-v0` 策略出发的 PPO 微调，零助力 |
+| **验收** | 1500/1500 控制步（15 s）、前进 21.9 m、两侧外骨骼铰链扭矩 0 Nm、左右交替触地 |
+| **测试** | `myosuite/tests/test_lin1_exo.py`：17 项（CAD 部件、焊缝耦合、叉耳座落、复位焊缝、绑带拖拽） |
 
-## Quick start
+## 快速上手
 
 ```bash
-pip install -e .                       # MyoSuite, editable
+pip install -e .                                        # 以可编辑方式安装 MyoSuite
 
-python scripts/view_walk_exo.py                       # watch the shipped policy walk
-python scripts/view_walk_exo.py --no-policy           # hold the reset pose, drag to orbit
-python scripts/eval_walk_exo.py --policy walk_exo_policy.zip   # the 15 s acceptance run
-pytest myosuite/tests/test_lin1_exo.py                # the device's own tests
+python scripts/view_walk_exo.py                         # 看自带策略行走
+python scripts/view_walk_exo.py --no-policy             # 停在复位位姿，鼠标拖动观看
+python scripts/eval_walk_exo.py --policy walk_exo_policy.zip   # 15 秒验收
+pytest myosuite/tests/test_lin1_exo.py                  # 设备自身测试
 ```
 
-Training a new controller (fine-tune of the published baseline onto the exo env):
+重新训练一个控制器（把官方策略微调到外骨骼环境）：
 
 ```bash
 python scripts/finetune_walk_exo.py --resume walk_exo_policy.zip \
@@ -41,49 +33,37 @@ python scripts/finetune_walk_exo.py --resume walk_exo_policy.zip \
 python scripts/eval_walk_exo.py --policy finetune_ckpt/ppo_1400000_steps.zip
 ```
 
-Two gotchas learned the hard way: evaluate SB3 checkpoints with `--policy` (the `--checkpoint`
-loader is for the rsl_rl format and silently produces a 43-step fall), and the **final**
-checkpoint of a run can regress — sweep `finetune_ckpt/ppo_*_steps.zip` and keep the first one
-that passes.
+两个踩过的坑：评估 SB3 的 `.zip` 必须用 `--policy`（`--checkpoint` 是 rsl_rl 格式的加载器，会让任何策略都只跑 43 步就倒）；一次训练的**最后**检查点可能退化，要逐个扫 `finetune_ckpt/ppo_*_steps.zip`，留第一个通过验收的。
 
-## How the wearing geometry is built
+## 佩戴位姿是怎么摆出来的
 
-The CAD gives the device's assembly pose, not the pose it is worn in. `lin1_exo.py` places it with
-a handful of geometry-only moves (all documented next to their constants):
+CAD 给的是装配位姿，不是穿在身上的位姿。`lin1_exo.py` 用几处纯几何的摆放把它穿上去（每处都在常量旁写了原因）：
 
-* **flexion / abduction hinges** are seeded per keyframe so the strap weld starts closed instead of
-  kicking the walker on the first control step;
-* the **crank fork and the drum's end cover clock together about the motor axis** — the cover's
-  clock reads the same flexion value, so one seed turns both;
-* the **thigh rod turns about the clevis bolt** (`_ROD_HINGE_DEG`) — the only rotation that keeps
-  its knuckle in the fork's lugs — and the **strap ring is seated on the rod's distal buckle**
-  (`seat_cuff_on_rod`), so the strap is worn where the bar reaches;
-* the stance is narrowed in every keyframe so the legs stand the way the device is worn.
+* **屈曲 / 外展铰链**按关键帧播种，让绑带焊缝一开始就是闭合的，避免第一步就被约束弹开；
+* **曲折杆与鼓形端盖一起绕电机中轴转动**——端盖的时钟读的就是同一个屈曲角，所以一个种子同时带动两者；
+* **长杆绕销轴转动**（`_ROD_HINGE_DEG = 15°`）——这是唯一能让杆根部铰接圆柱留在叉耳里的转动；**绿色腿环坐在杆末端的卡扣上**（`seat_cuff_on_rod`），绑带就戴在杆实际够得到的位置；
+* 每个关键帧里**收窄站姿**，让双腿的站距符合实际佩戴。
 
-These are mesh placements: the collision model, the joint set and the weld are untouched, so the
-physics stays that of the passive device.
+以上都是网格摆放：碰撞模型、关节集合和焊缝都没动，物理仍然是那台被动装置的物理。
 
-## Layout
+## 目录结构
 
 ```
-myosuite/envs/myo/tasks/basic/leg/lin1_exo.py   device: CAD parts, hinges, strap weld, placement
-myosuite/envs/myo/tasks/basic/leg/walk_exo.py   the two exo envs + wearing knobs
-myosuite/envs/myo/assets/leg/lin1_exo/meshes/   STL parts exported from SolidWorks
-myosuite/tests/test_lin1_exo.py                 device tests
-scripts/view_walk_exo.py                        interactive viewer
-scripts/eval_walk_exo.py                        15 s acceptance run
-scripts/finetune_walk_exo.py                    PPO fine-tune onto the exo env
-scripts/diag_exo_*.py                           diagnostics used while tuning
-walk_exo_policy.zip                             the shipped 15 s controller
+myosuite/envs/myo/tasks/basic/leg/lin1_exo.py   装置：CAD 部件、铰链、绑带焊缝、佩戴摆放
+myosuite/envs/myo/tasks/basic/leg/walk_exo.py   两个外骨骼环境 + 佩戴旋钮
+myosuite/envs/myo/assets/leg/lin1_exo/meshes/   SolidWorks 导出的 STL 零件
+myosuite/tests/test_lin1_exo.py                 设备测试
+scripts/view_walk_exo.py                        交互查看器
+scripts/eval_walk_exo.py                        15 秒验收
+scripts/finetune_walk_exo.py                    把策略微调到外骨骼环境
+scripts/diag_exo_*.py                           调参时用的诊断脚本
+walk_exo_policy.zip                             自带的 15 秒行走策略
 ```
 
-## Upstream
+## 上游
 
-This is a fork of [MyoSuite](https://github.com/MyoHub/myosuite) (Apache-2.0, see `LICENSE`).
-Everything outside `lin1_exo.py`, `walk_exo.py`, the `lin1_exo` assets, the exo scripts/tests and
-this README is upstream MyoSuite; see its documentation for the musculoskeletal models, tasks and
-the RL tooling this work builds on.
+本仓库是 [MyoSuite](https://github.com/MyoHub/myosuite) 的 fork（Apache-2.0，见 `LICENSE`）。除 `lin1_exo.py`、`walk_exo.py`、`lin1_exo` 资源、外骨骼相关脚本与测试、本 README 之外，其余均来自上游；肌骨模型、任务和 RL 工具请参阅上游文档。
 
 ---
 
-<sub>中文摘要：Lin-I 被动髋外骨骼在 MyoSuite 里的 CAD 级仿真——每侧 5 个被动自由度、大腿绑带以柔性焊缝耦合，电机零输出。仓库自带能稳定行走 15 s（1500 步 / 21.9 m）的策略、验收脚本、交互查看器和 17 项设备测试。</sub>
+<sub>English summary: a CAD-accurate model of the Lin-I passive hip exoskeleton in MyoSuite — five passive DOF per side, the thigh link coupled to the femur by a compliant strap weld, zero motor torque — shipped with a fine-tuned policy that walks 15 s (1500 steps, 21.9 m), an acceptance script, an interactive viewer and 17 device tests.</sub>
