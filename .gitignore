@@ -193,3 +193,6 @@ tb_logs*/
 /_*.json
 /walk_exo_policy_prev_*.zip
 /walk_exo_policy_v2.zip
+
+# but keep the documentation walk clip
+!docs/videos/*.mp4
