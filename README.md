@@ -57,17 +57,6 @@ python scripts/eval_walk_exo.py --policy finetune_ckpt/ppo_1400000_steps.zip
 
 两个踩过的坑：评估 SB3 的 `.zip` 必须用 `--policy`（`--checkpoint` 是 rsl_rl 格式的加载器，会让任何策略都只跑 43 步就倒）；一次训练的**最后**检查点可能退化，要逐个扫 `finetune_ckpt/ppo_*_steps.zip`，留第一个通过验收的。
 
-## 佩戴位姿是怎么摆出来的
-
-CAD 给的是装配位姿，不是穿在身上的位姿。`lin1_exo.py` 用几处纯几何的摆放把它穿上去（每处都在常量旁写了原因）：
-
-* **屈曲 / 外展铰链**按关键帧播种，让绑带焊缝一开始就是闭合的，避免第一步就被约束弹开；
-* **曲折杆与鼓形端盖一起绕电机中轴转动**——端盖的时钟读的就是同一个屈曲角，所以一个种子同时带动两者；
-* **长杆绕销轴转动**（`_ROD_HINGE_DEG = 15°`）——这是唯一能让杆根部铰接圆柱留在叉耳里的转动；**绿色腿环坐在杆末端的卡扣上**（`seat_cuff_on_rod`），绑带就戴在杆实际够得到的位置；
-* 每个关键帧里**收窄站姿**，让双腿的站距符合实际佩戴。
-
-以上都是网格摆放：碰撞模型、关节集合和焊缝都没动，物理仍然是那台被动装置的物理。
-
 ## 目录结构
 
 ```
@@ -81,10 +70,6 @@ scripts/finetune_walk_exo.py                    把策略微调到外骨骼环�
 scripts/diag_exo_*.py                           调参时用的诊断脚本
 walk_exo_policy.zip                             自带的 15 秒行走策略
 ```
-
-## 上游
-
-本仓库是 [MyoSuite](https://github.com/MyoHub/myosuite) 的 fork（Apache-2.0，见 `LICENSE`）。除 `lin1_exo.py`、`walk_exo.py`、`lin1_exo` 资源、外骨骼相关脚本与测试、本 README 之外，其余均来自上游；肌骨模型、任务和 RL 工具请参阅上游文档。
 
 ---
 
