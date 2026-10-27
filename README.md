@@ -1,255 +1,89 @@
-<!-- =================================================
-# Copyright (c) MyoSuite Authors
-================================================= -->
-<img src="https://github.com/myohub/myosuite/blob/main/docs/source/images/Full%20Color%20Horizontal%20wider.png?raw=true" width=800>
+# Lin-I — a passive hip exoskeleton in MuJoCo / MyoSuite
 
-[![Support Ukraine](https://img.shields.io/badge/Support-Ukraine-FFD500?style=flat&labelColor=005BBB)](https://opensource.facebook.com/support-ukraine)
-[![PyPI](https://img.shields.io/pypi/v/myosuite)](https://pypi.org/project/MyoSuite/)
-[![Documentation Status](https://readthedocs.org/projects/myosuite/badge/?version=latest)](https://myosuite.readthedocs.io/en/latest/)
-![PyPI - License](https://img.shields.io/pypi/l/myosuite)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/myohub/myosuite/blob/main/docs/CONTRIBUTING.md)
-[![Downloads](https://static.pepy.tech/badge/myosuite)](https://pepy.tech/project/myosuite)
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/MyoHub/myosuite/blob/main/tutorials/1.1_Get_Started.ipynb)
-[![Slack](https://img.shields.io/badge/Slack-4A154B?style=for-the-badge&logo=slack&logoColor=white)](https://join.slack.com/t/myosuite/shared_invite/zt-1zkpw2zzk-NhVhVlSDxhoMHbzROD8gMA)
-[![Twitter Follow](https://img.shields.io/twitter/follow/MyoSuite?style=social)](https://twitter.com/MyoSuite)
+A CAD-accurate simulation of the **Lin-I passive hip exoskeleton** worn by the MyoSuite
+musculoskeletal walker, plus the tooling to wear it, watch it, and teach a controller to walk in it
+with the device completely unpowered.
 
-**MyoSuite** is a collection of musculoskeletal environments and tasks simulated with the [MuJoCo](http://www.mujoco.org/) physics engine. It serves researchers and practitioners across biomechanics, neuroscience, machine learning, sports medicine, and physical rehabilitation.
+The device is a hip module on each side of a waist frame: a drum with a flexion and an abduction
+hinge, a crank fork that seats on the drum's end cover, a parallel thigh link hanging off the
+clevis pin, a pin-in-slot slide and a thigh strap that couples the link to the femur through a
+compliant weld. Nothing actuates it — the joints are passive, and the strap drags the link along
+the thigh as the human walks.
 
-[Documentation](https://myosuite.readthedocs.io/en/latest/) · [Tutorials](tutorials/) · [Task list](https://myosuite.readthedocs.io/en/latest/environments.html)
+---
 
-<img width="1240" alt="TasksALL" src="./docs/source/images/MyoSuiteHeader.png?raw=true">
+## What it does
 
-## Lin-I hip exoskeleton (this fork)
-
-This fork adds a passive hip exoskeleton ("Lin-I") worn by the musculoskeletal walker, and the
-tooling used to seat it, watch it and train a controller for it.
-
-* `myoLegWalkExo-v0` — `myoLegWalk-v0` plus the device: two hip modules on the waist frame, a
-  flexion + abduction hip joint, a parallel thigh link hanging off a crank clevis, a pin-in-slot
-  slide and a thigh strap coupled to the femur by a compliant weld. `myoLegWalkExoLocked-v0` is the
-  same device drawn rigidly, for visual comparison. Code: `myosuite/envs/myo/tasks/basic/leg/
-  lin1_exo.py`, `walk_exo.py`; meshes in `myosuite/envs/myo/assets/leg/lin1_exo/meshes`.
-* `scripts/view_walk_exo.py` — interactive viewer (`--no-policy` holds the reset pose).
-* `scripts/eval_walk_exo.py` — 15 s acceptance run (survives 1500 control steps, >= 5 m, both exo
-  motors unpowered, alternating foot contacts). The shipped `walk_exo_policy.zip` passes all four:
-  1500/1500 steps, 21.9 m, 0 Nm exo torque, alternating contacts.
-* `scripts/finetune_walk_exo.py` — PPO fine-tune of the published `myoLegWalk-v0` policy onto the
-  exo env (`--resume`, 1.5 M steps, 4 envs, `--target-kl 0.08`). Evaluate its checkpoints with
-  `eval_walk_exo.py --policy <ckpt>.zip`; the final checkpoint can regress, so keep the earliest
-  one that passes.
-* `myosuite/tests/test_lin1_exo.py` — the device's own test suite (`pytest`).
-
-Wearing details measured from the build: the rod hangs in the fork clevis and turns about its
-bolt, the drum end cover clocks with the fork, and the strap ring is seated on the rod's distal
-buckle — all geometry-only, so the physics stays that of the passive device.
-
-
-
-<details>
-  <summary><h2>What's new in MyoSuite 3</h2></summary>
-
-MyoSuite 3 brings the whole suite to fast, scalable training while keeping the simple interface you know:
-
-- **Much faster learning.** Train with thousands of environments in parallel on a single GPU, then replay the policy on the CPU.
-- **One task, several backends.** The same `env_id` runs on your **CPU** through the standard [Gymnasium](https://gymnasium.farama.org/) interface (to explore, debug and replay policies, or to train with libraries such as Stable-Baselines3), on **mjlab** for massively parallel GPU training, and on an **experimental MJX** (JAX) path.
-- **Muscle conditions as features.** Motor noise, fatigue, sarcopenia and reafferentation are wrappers, not env arguments. `make_env(EnvConfig(env_id, features=...))` applies them identically on the CPU env and the GPU twin, together with the episode length and control step ([cross-backend contract](docs/wiki/cross-backend-contract.md)).
-- **MuscleMimic support.** Run, evaluate and train full-body and bimanual **MuscleMimic** policies, with ready-to-use checkpoints and motion datasets.
-- **Updated musculoskeletal models.** `myo-sim` moved from a moving `dev` branch to a pinned PyPI release (0.2.3) with some model updates, including a torso/pelvis frame fix for the leg models ([myo_sim#132](https://github.com/MyoHub/myo_sim/pull/132)).
-- **The complete MyoChallenge suite** as Gymnasium environments: Baoding, Bimanual, Chase Tag, Die Reorient, OSL Run, Relocate, Soccer and Table Tennis.
-- **New tasks in a few lines.** Describe a task with a compact spec and reuse the shared observation, reward and model-building blocks instead of writing an environment class.
-- **Some existing environments changed.** Observations are no longer clipped and are read after a fresh forward step (55 env ids), the `motorFinger*` envs have 4x stronger motors, the Random finger-reach tasks now sample only targets the fingertip can reach, and several reset and seed behaviours were corrected. Policies trained with MyoSuite 2.x or earlier snapshots may need retraining; see [`CHANGELOG.md`](CHANGELOG.md) for the full list.
-- **Ready to use.** Default trained policies on [Hugging Face](https://huggingface.co/myohub/myosuite-3-baselines) (see [`docs/baseline_checkpoints.md`](docs/baseline_checkpoints.md) for the full list and success rates) with evaluation videos, plus updated tutorials from the first rollout to GPU training and MuscleMimic. See the [changelog](CHANGELOG.md) for everything that changed since v2.12.
-</details>
-
-## Start here
-
-| I am a…                    | Start here                                                   |
-| --------------------------- | ------------------------------------------------------------ |
-| **ML / RL**           | [ML guide](docs/source/quickstart_ml.rst)                     |
-| **Biomechanics**      | [Biomechanics guide](docs/source/quickstart_biomechanics.rst) |
-| **Neuroscience**      | [Neuroscience guide](docs/source/quickstart_neuroscience.rst) |
-| **Rehab / sports**    | [Rehab guide](docs/source/quickstart_rehabilitation.rst)      |
-| **Changing the code** | [Developer getting started](docs/wiki/getting-started.md)     |
-
-
-## Install
-
-Python 3.10–3.14 is supported (the GPU `[mjlab]` extra needs Python ≤3.13). From source (recommended):
-
-```bash
-git clone https://github.com/MyoHub/myosuite.git
-cd myosuite
-pip install -e ".[rl]"          # CPU training (Stable-Baselines3)
-# uv pip install -e ".[mjlab]" --torch-backend=auto   # GPU (NVIDIA, Linux or Windows), picks the torch
-                                 # build for your driver; with pip see docs/source/install.rst
-```
-
-Or: `uv sync -p 3.10 --extra rl`.
-
-From PyPI: `pip install -U myosuite`.
-
-**Models.** The musculoskeletal models ship in the `myo-sim` package, pinned to 0.2.3 and installed from PyPI together with MyoSuite, so no git submodules and no separate model install are needed. The few MPL, YCB and furniture assets the tasks use are bundled in `myosuite/envs/myo/assets/`. Environments compose their models with `ModelBuilder` (see the [model builder guide](docs/source/model_builder.rst)). A different `myo-sim` version can change joints and ranges (the thumb joints did in 0.2.0), so the baseline policies are only valid for the pinned version.
-
-Verify (replace "onscreen" with "offscreen" when running on a remote, headless machine):
-
-```bash
-python -c "import myosuite; print(len(myosuite.myosuite_env_suite), 'envs')"
-python -m myosuite.utils.examine_env --env_name myoElbowPose1D6MRandom-v0 --render onscreen
-# macOS viewer: mjpython -m myosuite.utils.examine_env --env_name myoElbowPose1D6MRandom-v0 --render onscreen
-```
-
-Run these from a directory that does not directly contain a folder named `myosuite` (for example not the parent of your clone); otherwise Python imports that folder as a namespace package and fails with `cannot import name ... from 'myosuite' (unknown location)`.
-
+| | |
+|---|---|
+| **Env** | `myoLegWalkExo-v0` — `myoLegWalk-v0` + Lin-I; `myoLegWalkExoLocked-v0` draws the same device rigidly for comparison |
+| **Device** | 5 passive DOF per side (abduction, flexion, crank pin, slot, link roll), 3 kg lumped onto the CAD mass distribution, one compliant point weld per side (thigh strap) |
+| **Policy** | `walk_exo_policy.zip` — PPO fine-tune of the published `myoLegWalk-v0` policy, zero assistance |
+| **Acceptance** | 1500 / 1500 control steps (15 s), 21.9 m, 0 Nm at both exo hinges, alternating foot contacts |
+| **Tests** | `myosuite/tests/test_lin1_exo.py` — 17 checks (CAD groups, weld coupling, clevis seating, reset welds, strap drag) |
 
 ## Quick start
 
-```python
-from myosuite import make_env
+```bash
+pip install -e .                       # MyoSuite, editable
 
-env = make_env("myoElbowPose1D6MRandom-v0")
-obs, info = env.reset(seed=0)
-for _ in range(1000):
-    obs, reward, terminated, truncated, info = env.step(env.action_space.sample())
-    if terminated or truncated:
-        obs, info = env.reset()
-env.close()
+python scripts/view_walk_exo.py                       # watch the shipped policy walk
+python scripts/view_walk_exo.py --no-policy           # hold the reset pose, drag to orbit
+python scripts/eval_walk_exo.py --policy walk_exo_policy.zip   # the 15 s acceptance run
+pytest myosuite/tests/test_lin1_exo.py                # the device's own tests
 ```
 
-`info["obs_dict"]` and `info["rwd_dict"]` break down the observation and reward every step.
-
-Train on CPU:
-
-```python
-from stable_baselines3 import PPO
-from myosuite import make_env
-
-env = make_env("myoElbowPose1D6MRandom-v0")
-model = PPO("MlpPolicy", env, device="cpu")
-model.learn(total_timesteps=100_000)
-```
-
-Or use the ready-made script (PPO, SAC or TD3; saves the model and scores the policy at the end):
+Training a new controller (fine-tune of the published baseline onto the exo env):
 
 ```bash
-python scripts/train_sb3.py myoElbowPose1D6MRandom-v0 --timesteps 500000
+python scripts/finetune_walk_exo.py --resume walk_exo_policy.zip \
+       --steps 1500000 --n-envs 4 --target-kl 0.08 --eval-every 50000
+python scripts/eval_walk_exo.py --policy finetune_ckpt/ppo_1400000_steps.zip
 ```
 
-Train on GPU (same `env_id`, mjlab / RSL-RL):
+Two gotchas learned the hard way: evaluate SB3 checkpoints with `--policy` (the `--checkpoint`
+loader is for the rsl_rl format and silently produces a 43-step fall), and the **final**
+checkpoint of a run can regress — sweep `finetune_ckpt/ppo_*_steps.zip` and keep the first one
+that passes.
 
-```bash
-python scripts/train_mjlab.py myoElbowPose1D6MRandom-v0 --env.scene.num-envs 1024
+## How the wearing geometry is built
+
+The CAD gives the device's assembly pose, not the pose it is worn in. `lin1_exo.py` places it with
+a handful of geometry-only moves (all documented next to their constants):
+
+* **flexion / abduction hinges** are seeded per keyframe so the strap weld starts closed instead of
+  kicking the walker on the first control step;
+* the **crank fork and the drum's end cover clock together about the motor axis** — the cover's
+  clock reads the same flexion value, so one seed turns both;
+* the **thigh rod turns about the clevis bolt** (`_ROD_HINGE_DEG`) — the only rotation that keeps
+  its knuckle in the fork's lugs — and the **strap ring is seated on the rod's distal buckle**
+  (`seat_cuff_on_rod`), so the strap is worn where the bar reaches;
+* the stance is narrowed in every keyframe so the legs stand the way the device is worn.
+
+These are mesh placements: the collision model, the joint set and the weld are untouched, so the
+physics stays that of the passive device.
+
+## Layout
+
+```
+myosuite/envs/myo/tasks/basic/leg/lin1_exo.py   device: CAD parts, hinges, strap weld, placement
+myosuite/envs/myo/tasks/basic/leg/walk_exo.py   the two exo envs + wearing knobs
+myosuite/envs/myo/assets/leg/lin1_exo/meshes/   STL parts exported from SolidWorks
+myosuite/tests/test_lin1_exo.py                 device tests
+scripts/view_walk_exo.py                        interactive viewer
+scripts/eval_walk_exo.py                        15 s acceptance run
+scripts/finetune_walk_exo.py                    PPO fine-tune onto the exo env
+scripts/diag_exo_*.py                           diagnostics used while tuning
+walk_exo_policy.zip                             the shipped 15 s controller
 ```
 
-No step count is needed: it runs the task's default number of PPO iterations (`--agent.max-iterations`, 1000 unless the task sets another) and stops early once the deterministic policy reaches 95% success (`--stop-on-success False` turns that off).
+## Upstream
 
-The same call builds either backend, and an `EnvConfig` overrides the registered defaults (episode length, control step,
-muscle-command features such as motor noise and fatigue) for both:
+This is a fork of [MyoSuite](https://github.com/MyoHub/myosuite) (Apache-2.0, see `LICENSE`).
+Everything outside `lin1_exo.py`, `walk_exo.py`, the `lin1_exo` assets, the exo scripts/tests and
+this README is upstream MyoSuite; see its documentation for the musculoskeletal models, tasks and
+the RL tooling this work builds on.
 
-```python
-from myosuite import make_env
-from myosuite.core.config import EnvConfig
-from myosuite.envs.wrappers import FatigueWrapper, MotorNoiseWrapper
+---
 
-env_cpu = make_env("myoElbowPose1D6MRandom-v0")                               # CPU, registered defaults
-env_gpu = make_env("myoElbowPose1D6MRandom-v0", backend="mjlab", num_envs=1024)  # GPU twin (needs the mjlab extra)
-
-cfg = EnvConfig(
-    "myoElbowPose1D6MRandom-v0",
-    max_episode_steps=300,
-    features=((MotorNoiseWrapper, {"motor_noise": {"constant_std": 0.05}}), FatigueWrapper),
-)
-env_cpu = make_env(cfg)                               # CPU with noise and fatigue
-env_gpu = make_env(cfg, backend="mjlab", num_envs=1024)  # the same on the GPU
-```
-
-Muscle-condition variants of an env are separate ids with a prefix: `myoSarcElbowPose1D6MRandom-v0` (sarcopenia), `myoFatiElbowPose1D6MRandom-v0` (fatigue), `myoReafHandPoseRandom-v0` (reafferentation). Each is the base env registered with the matching wrapper; to use these features (noise, fatigue, ...) on any env, or to register your own variant, see the [neuroscience guide](docs/source/quickstart_neuroscience.rst) (examples) and the [cross-backend contract](docs/wiki/cross-backend-contract.md#muscle-command-features-wrappers) (how features are registered and which envs and backends support them).
-
-
-
-## Environments
-
-| Body      | Example IDs                                                     |
-| --------- | --------------------------------------------------------------- |
-| Elbow     | `myoElbowPose1D6MRandom-v0`, `myoFatiElbowPose1D6MRandom-v0` |
-| Finger    | `myoFingerPoseRandom-v0`, `myoFingerReachRandom-v0`         |
-| Hand      | `myoHandPoseRandom-v0`, `myoChallengeBaodingP2-v1`          |
-| Arm       | `myoArmReachRandom-v0`                                        |
-| Leg       | `myoLegWalk-v0`, `myoLegDirectionalForward-v0`              |
-| Full body | `myoMimicFullbody-v0`                                         |
-
-List every registered CPU ID: `python -c "import myosuite; print('\n'.join(myosuite.myosuite_env_suite))"`. Annotated catalog: [environments](https://myosuite.readthedocs.io/en/latest/environments.html).
-
-### Backends
-
-| Backend | Use | Build an env in Python | Train |
-| --- | --- | --- | --- |
-| **CPU** (Gymnasium) | playback, debug, SB3 | `make_env(env_id)` | `scripts/train_sb3.py <env_id>` (PPO, SAC or TD3) |
-| **mjlab** (MuJoCo Warp) | parallel GPU training | `make_env(env_id, backend="mjlab", num_envs=...)` | `scripts/train_mjlab.py <env_id>` |
-
-The mjlab backend needs `pip install -e ".[mjlab]"`. `make_env` only builds the env (to step it, evaluate a policy or write your own training loop); `scripts/train_sb3.py` (CPU) and `scripts/train_mjlab.py` (GPU) are the ready-made training scripts.
-
-A task’s CPU and mjlab halves share one `env_id` (see [cross-backend contract](docs/wiki/cross-backend-contract.md)). `make_env(EnvConfig(env_id, backend=..., features=...))` builds either half with the same episode length, control step and muscle-command features. An MJX (JAX) path also exists; it is **experimental** and not the supported training route.
-
-
-## Tutorials
-
-All notebooks are listed, with what each needs, in the [tutorial index](tutorials/README.md).
-
-Start with [1.1 Get Started](tutorials/1.1_Get_Started.ipynb), then [2.1 Train SB3 Policy](tutorials/2.1_Train_SB3_Policy.ipynb) (CPU).
-
-GPU walk-through: [2.2 Train MjLab Policy](tutorials/2.2_Train_MjLab_Policy.ipynb).
-
-Full-body MuscleMimic: [5.1 Load Policy](tutorials/5.1_Fullbody_Load_Policy.ipynb) (playback) and [5.3 Train with mjlab](tutorials/5.3_Fullbody_Train_MjLab_Policy.ipynb); background, data and checkpoints in the [MuscleMimic README](myosuite/integrations/musclemimic/README.md).
-
-
-## License
-
-[Apache License](LICENSE).
-
-## Citation
-
-If you use MyoSuite, please cite the MyoSuite paper:
-
-```bibtex
-@inproceedings{Caggiano2022MyoSuite,
-  title     = {{MyoSuite} -- A contact-rich simulation suite for musculoskeletal motor control},
-  author    = {Caggiano, Vittorio and Wang, Huawei and Durandau, Guillaume and Sartori, Massimo and Kumar, Vikash},
-  booktitle = {Learning for Dynamics and Control (L4DC)},
-  year      = {2022},
-  doi       = {10.48550/ARXIV.2205.13600},
-  url       = {https://arxiv.org/abs/2205.13600},
-}
-```
-
-For MyoSuite 3 (the GPU backends, the muscle conditions, the MyoChallenge envs), cite it as software:
-
-```bibtex
-@misc{MyoSuite2026,
-  title        = {{MyoSuite} 3.0 -- A multimodal platform for efficient and scalable musculoskeletal motor control},
-  author       = {Caggiano, Vittorio and Hodossy, Balint and Fischer, Florian and Wang, Cheryl and {MyoSuite Team}},
-  year         = {2026},
-  howpublished = {\url{https://github.com/myohub/myosuite}},
-}
-```
-
-If you use the full-body MuscleMimic models, checkpoints, retargeted motions or tutorials 5.1-5.5, also cite:
-
-```bibtex
-@article{Li2026MuscleMimic,
-  title   = {Towards Embodied AI with {MuscleMimic}: Unlocking full-body musculoskeletal motor learning at scale},
-  author  = {Li, Chengkun and Wang, Cheryl and Ziliotto, Bianca and Simos, Merkourios and Kovecses, Jozsef and Durandau, Guillaume and Mathis, Alexander},
-  journal = {arXiv preprint arXiv:2603.25544},
-  year    = {2026},
-}
-```
-
-The motion data behind MuscleMimic comes from [AMASS](https://amass.is.tue.mpg.de) (Mahmood et al., ICCV 2019), whose
-KIT subset (Mandery et al., 2015, 2016) provides the locomotion clips, retargeted with GMR (Araújo et al., 2025). The
-retargeted datasets are for non-commercial research under the AMASS license and ask you to cite AMASS and MuscleMimic.
-
-Further papers use or build on MyoSuite: MyoSim (ICRA 2022), MyoDex (ICML 2023), SAR (RSS 2023), MyoChallenge 2022,
-DEP-RL (ICLR 2023), Lattice (NeurIPS 2023), MyoInteract (DIS 2026, a GUI framework for prototyping
-biomechanical HCI tasks on top of MyoSuite) and the Virtual Gait Lab for testing prosthetics with simulated
-users (IEEE T-MRB 2026). The sources behind the models, the muscle fatigue model, the
-controllers and the motion data are collected in [`docs/source/references.rst`](docs/source/references.rst) (page
-*References* of the documentation); `CITATION.cff` holds the machine-readable citation.
+<sub>中文摘要：Lin-I 被动髋外骨骼在 MyoSuite 里的 CAD 级仿真——每侧 5 个被动自由度、大腿绑带以柔性焊缝耦合，电机零输出。仓库自带能稳定行走 15 s（1500 步 / 21.9 m）的策略、验收脚本、交互查看器和 17 项设备测试。</sub>
