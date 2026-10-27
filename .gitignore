@@ -176,3 +176,20 @@ benchmarks/*
 docs/source/tutorials/checkpoints/*
 tutorials/**/*.zip
 *.out
+
+# Lin-I exo: training checkpoints, tensorboard, render/probe artefacts
+finetune_ckpt*/
+ckpt_exo*/
+tb_logs*/
+/finetuned_*.zip
+/finetuned_*_info.json
+/finetune_episodes.csv
+/_*.png
+/_*.jpg
+/_*.jpeg
+/eval_*.json
+/myoLegWalkExo-v0.xml
+/myosuite/envs/myo/assets/leg/lin1_exo/meshes_mirror/
+/_*.json
+/walk_exo_policy_prev_*.zip
+/walk_exo_policy_v2.zip

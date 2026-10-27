@@ -99,6 +99,16 @@ _R_CAD_TO_PELVIS = np.array(
 # Bodies welded rigidly to the waist frame (they share the back frame and the hip axis).
 _FRAME_GROUPS = ("frame", "bracket_r", "bracket_l", "hipmod_r", "hipmod_l")
 
+# The module's end cover ships as its own solid, ``hipcap_<side>.stl`` (the thin disc outboard of
+# the drum - connected component #12614/#12667 of the CAD ``hipmod_<side>_0.stl``).  It is the one
+# housing piece that turns: ``clock_exo_endcap`` rotates it about the flexion axis so its relief
+# keeps tracking the crank fork, while the finned motor cylinder and the mounting arm stay bolted
+# to the waist frame exactly like the bracket.
+
+# The back plate, the two arms and the hip modules are one rigid CAD part, drawn in the
+# CAD's own assembly pose: the arms' end plates carry the drums' axles, so the frame is
+# never shifted on its own.  ``pitch_exo`` tips and slides the whole device instead.
+
 # The crank pin the long link hangs off, measured off the SolidWorks per-part export: the
 # link's proximal end sits 44 mm from the hip axis point, in CAD millimetres.
 _CRANK_PIN_MM = {
@@ -106,14 +116,13 @@ _CRANK_PIN_MM = {
     "l": (149.7, 184.9, -77.8),
 }
 # The pin is a real clevis hinge: the rod swings on it as the strap drags it along the
-# thigh, so the travel is the hardware's, not zero.  The centring spring pulls it back to
-# the straight CAD pose, which is also what keeps the two-link mechanism on the branch the
-# CAD is built on - with the pin completely free the rod wandered across the body.  It is
-# stiff on purpose: with a soft spring the strap load parks the pin a couple of degrees off
-# centre all through the gait, which walks the cuff's end ~20 mm off the thigh line.
-_CRANK_PIN_RANGE = (-0.15, 0.15)
+# thigh, and on the hardware it rotates visibly through the gait (user: 这个铰链部分不是
+# 刚性连接的 可以旋转的).  The centring spring only picks the assembly branch, so it is
+# soft - the hardware's return spring, not a weld.  (A stiffer k=20 with half the travel
+# made the joint read as rigidly bolted.)
+_CRANK_PIN_RANGE = (-0.45, 0.45)
 _CRANK_PIN_FRICTIONLOSS = 0.0
-_CRANK_PIN_STIFFNESS = 20.0
+_CRANK_PIN_STIFFNESS = 2.0
 
 # The hip it is worn on is not a single-axis joint, so the exo's hip is two DOF: the
 # module's axle gives flexion, and the assembly also swings in the frontal plane.  Without
@@ -122,6 +131,23 @@ _CRANK_PIN_STIFFNESS = 20.0
 _HIP_ABDUCTION_RANGE = (-0.35, 0.35)
 _ABDUCTION_SIGN = {"r": -1.0, "l": 1.0}   # sign per side, so positive = outward
 
+# The crank fork and the drum's end cover turn together about the motor axis (the user:
+# 外壳表壳和曲折杆以整个电机的中轴进行旋转).  The cover's clock is already tied to the flexion
+# key, so the fork angle alone sets both.  The seed turns the fork by this angle and the
+# pin/slot absorb the weld, so the link and the thigh ring keep their pose while the fork
+# and the cover visibly clock.  Sign per side so both forks turn the same way relative to
+# their hip.
+_CRANK_CLOCK_DEG = 10.0
+_CRANK_CLOCK_SIGN = {"r": 1.0, "l": -1.0}
+
+# walk.py resets from keyframe 2 ("init", the default) or draws 2 and 3 ("random"), so the
+# strap anchor is re-clamped on keyframe 2.
+_RESET_KEY = 2
+
+# The CAD places the waist frame where its own back plate sits behind the user.  The
+# back plate, the arms and the hip modules are one rigid part, so the frame cannot be
+# moved on its own without pulling the arm ends out of the hip modules' slots.
+
 # Deliberately avoids red: MyoSuite draws the muscle wrap geoms in red, and a red
 # exoskeleton merges into them in every render.  The five groups are also ordered by
 # brightness so the back frame stays readable against the body.
@@ -129,6 +155,7 @@ _RGBA = {
     "frame": (0.30, 0.32, 0.36, 1.0),
     "bracket": (0.62, 0.65, 0.70, 1.0),
     "hipmod": (0.16, 0.42, 0.85, 1.0),
+    "crank": (0.06, 0.17, 0.50, 1.0),
     "thigh": (0.90, 0.55, 0.10, 1.0),
     "cuff": (0.55, 0.85, 0.25, 1.0),
 }
@@ -368,7 +395,13 @@ def attach_lin1_exo(
     # rebuilt with a radial floor bent to 45 mm about the femur axis, so the pad
     # hovers ~5-12 mm over the bare bone in its band no matter where the anchor
     # sits, and the outer bracket arm rides clear at its own radii.
-    thigh_radius: float = 0.060,
+    # The radial offset therefore does not belong here: mjEQ_CONNECT drives the
+    # cuff-site origin, which sits on the roll axis, onto the anchor, so a
+    # non-zero radius displaces the whole ring off the femur axis instead of
+    # sizing it.  The only joint that can pay for that is hip abduction, and it
+    # is the fork's seat on the motor end-cap -- 60 mm of anchor offset costs
+    # 12.5 deg of abduction and lifts the fork 7 mm clear of the cover.
+    thigh_radius: float = 0.0,
     slot_mass: float = 0.01,
     weld_solref: tuple[float, float] = (0.01, 1.0),
     weld_solimp: tuple[float, ...] = (0.9, 0.95, 0.001, 0.5, 2.0),
@@ -418,6 +451,7 @@ def attach_lin1_exo(
     pelvis = _get_body(spec, "pelvis")
     frames = {}
     seed_map: dict[str, dict[str, float]] = {}
+    attach_sites: dict[str, Any] = {}
     quat_id = np.array([1.0, 0.0, 0.0, 0.0])
     mesh_names: dict[pathlib.Path, str] = {}
     added_dof = 0
@@ -462,12 +496,24 @@ def attach_lin1_exo(
     exo_frame.inertia = np.asarray(moments, dtype=np.float64)
     exo_frame.iquat = np.asarray(iquat, dtype=np.float64)
     if add_visuals:
+        # every frame chunk is drawn in its CAD pose: the arms' end plates carry the drums'
+        # axles, so a shifted frame would sit off the drums
         for name in _FRAME_GROUPS:
-            kind = "frame" if name == "frame" else ("hipmod" if name.startswith("hipmod") else "bracket")
+            kind = "frame" if name == "frame" else (
+                "bracket" if name.startswith("bracket") else "hipmod")
             _group_visual(
                 spec, exo_frame, name, groups[name], _R_CAD_TO_PELVIS, np.zeros(3),
                 _RGBA[kind], geom_group, mesh_names, mesh_dir, visual_style,
             )
+        for side in SIDES:
+            # no bounding-box fallback: a box cannot nest on the drum, so a missing cover
+            # asset just leaves the housing as one un-turnable piece
+            cap = mesh_dir / f"hipcap_{side}.stl"
+            if visual_style == "mesh" and cap.is_file():
+                _add_mesh_geom(
+                    spec, exo_frame, cap, mesh_names, _R_CAD_TO_PELVIS, np.zeros(3),
+                    _RGBA["hipmod"], geom_group, f"exo_mesh_hipcap_{side}",
+                )
 
     # ---- per side: exo flexion hinge -> thigh link -> pin-in-slot slide -> roll -> cuff --
     #
@@ -492,7 +538,7 @@ def attach_lin1_exo(
         tibia = _get_body(spec, f"tibia_{side}")
 
         hip = np.asarray(femur.pos, dtype=float)           # HJC in the pelvis frame
-        thigh = _unit(np.asarray(tibia.pos, dtype=float))  # HJC -> knee
+        thigh = _unit(np.asarray(tibia.pos, dtype=float))  # HJC -> knee, femur frame
         lateral = np.array([0.0, 0.0, float(np.sign(hip[2]))])  # outward hip axis
         hip_cad = np.asarray(landmarks[side]["hip_point_mm"], dtype=float) * 1e-3
         link_cad = _unit(np.asarray(landmarks[side]["link_axis_unit"], dtype=float))
@@ -554,9 +600,13 @@ def attach_lin1_exo(
         crank.inertia = np.asarray(cmoments, dtype=np.float64)
         crank.iquat = np.asarray(ciquat, dtype=np.float64)
         if add_visuals:
+            # The drum is the motor output: it sits on the hip axis and turns with the hip
+            # hinge.  Drawn on the crank body at its CAD anchor it stays concentric inside
+            # the housing, and its clevis lugs never leave the long rod's root.
             _group_visual(
-                spec, crank, f"crank_{side}", crank_grp, _R_CAD_TO_PELVIS, hip_cad,
-                _RGBA["hipmod"], geom_group, mesh_names, mesh_dir, visual_style,
+                spec, crank, f"crank_{side}", groups[f"hipmod_{side}"],
+                _R_CAD_TO_PELVIS, hip_cad, _RGBA["crank"], geom_group,
+                mesh_names, mesh_dir, visual_style,
             )
 
         bodies = {
@@ -622,7 +672,7 @@ def attach_lin1_exo(
                 limited=True,
                 stiffness=float(_CRANK_PIN_STIFFNESS),
                 springref=0.0,
-                damping=max(5.0, float(damping)),
+                damping=max(2.0, float(damping)),
                 armature=float(armature),
                 frictionloss=float(_CRANK_PIN_FRICTIONLOSS),
             )
@@ -659,7 +709,7 @@ def attach_lin1_exo(
                 # femur axis, and spans only the few millimetres to the cuff - the cuff
                 # lands on the thigh because link_dir keeps its CAD medial tilt
                 attach = hip_to_cuff * thigh + thigh_radius * lateral
-                femur.add_site(name=f"exo_attach_{side}", pos=attach)
+                attach_sites[side] = femur.add_site(name=f"exo_attach_{side}", pos=attach)
                 # The cuff site sits ON the roll axis.  Offsetting it one thigh radius to
                 # give the strap a third translating DOF was tried and rejected: correcting
                 # tens of millimetres of gap that way needs >1.2 rad of roll, which pins the
@@ -702,12 +752,12 @@ def attach_lin1_exo(
                                      float(link_dir @ thigh)))
             seed_map[side] = {
                 "joints": list(joint_names),
-                "values": [flex0, 0.0, 0.0],
+                "values": {j1.name: flex0},
             }
 
 
     if added_dof:
-        _seed_keyframe_exo_dofs(spec, added_dof, seed_map)
+        _seed_keyframe_exo_dofs(spec, added_dof, seed_map, attach_sites)
 
     return {
         "locked": bool(locked),
@@ -734,20 +784,411 @@ policy was trained and verified with; these geoms are hidden, so it is never see
 """
 
 
-def style_muscle_geoms(model: mujoco.MjModel) -> int:
-    """Hide the muscles so the body reads as bone wearing the exoskeleton.
+def place_strap_on_muscle(model: mujoco.MjModel, swing_deg: float = 0.0,
+                          out_mm: float = 0.0, align_front: bool = True,
+                          roll_deg: float = 0.0, lift_deg: float = 0.0,
+                          standoff_mm: float = 0.0, turn_deg: float = 0.0,
+                          hinge_deg: float = 0.0) -> float:
+    """Set the thigh rod and strap in the pose they are worn in, clear of the flesh.
+
+    The strap is drawn in the CAD's assembly pose, hanging on the *side* of the thigh.  The
+    rod is bolted to the drum through a clevis, so the only motion that keeps its root in
+    the drum's lugs is a turn about the clevis bolt itself; ``hinge_deg`` turns the whole
+    link - rod and strap together - about that bolt, lifting the buckle off the muscle and
+    dragging it forward until the rod rides on the muscle's surface.  The other turns
+    (roll about the leg, swing about the crank pin, lift about the pelvis lateral, standoff
+    and turn about the pin) let a walk be measured on other poses; they skew the clevis, so
+    the shipped build only uses the hinge.  The pose it is measured on is the static
+    (standing) one, so the strap is placed where the machine is worn; the strap is left
+    unfastened from the rod for now.
+
+    Returns the angle that was taken out of the strap, in degrees.
+    """
+    data = mujoco.MjData(model)
+    if model.nkey:
+        data.qpos[:] = model.key_qpos[0]
+    mujoco.mj_kinematics(model, data)
+    pelvis_id = model.body("pelvis").id
+    pelvis_mat = data.xmat[pelvis_id].reshape(3, 3)
+    anterior = pelvis_mat @ np.array([1.0, 0.0, 0.0])
+    lateral = pelvis_mat @ np.array([0.0, 0.0, 1.0])
+    taken = 0.0
+    for side in SIDES:
+        hip = data.xpos[model.body(f"femur_{side}").id].copy()
+        knee = data.xpos[model.body(f"tibia_{side}").id].copy()
+        thigh = _unit(knee - hip)
+        pin = data.xpos[model.body(f"exo_link_{side}").id].copy()
+        if roll_deg:
+            # the rod hangs off the drum on the outside of the thigh; roll it about the
+            # leg's centreline, through the crank pin, until the long link runs down the
+            # middle of the thigh's front face.  The pin point is on the axis, so the rod's
+            # root stays in the drum's lugs.
+            spin = _rodrigues(thigh, -np.deg2rad(roll_deg))
+            for gid in range(model.ngeom):
+                name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, gid) or ""
+                if not name.startswith(f"exo_mesh_thigh_{side}_"):
+                    continue
+                body = model.geom_bodyid[gid]
+                body_mat = data.xmat[body].reshape(3, 3)
+                world = pin + spin @ (data.geom_xpos[gid] - pin)
+                model.geom_pos[gid] = body_mat.T @ (world - data.xpos[body])
+                model.geom_quat[gid] = _mat_to_quat(
+                    body_mat.T @ spin @ data.geom_xmat[gid].reshape(3, 3))
+            mujoco.mj_kinematics(model, data)
+        if swing_deg:
+            # the rod's lower end is turned in towards the exo's centre line about the
+            # clevis point, in the frontal plane.  The strap ring is a separate part clamped
+            # on the thigh (unfastened from the rod), so only the rod turns.
+            inward = lateral * (1.0 if (data.xpos[pelvis_id] - pin) @ lateral > 0.0 else -1.0)
+            arm = data.xpos[model.body(f"exo_cuff_{side}").id] - pin
+            # positive swing_deg always turns the far end inwards, negative outwards
+            angle = np.deg2rad(abs(swing_deg))
+            if (_rodrigues(anterior, angle) @ arm) @ inward < arm @ inward:
+                angle = -angle
+            if swing_deg < 0:
+                angle = -angle
+            spin = _rodrigues(anterior, angle)
+            for gid in range(model.ngeom):
+                name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, gid) or ""
+                if not name.startswith(f"exo_mesh_thigh_{side}_"):
+                    continue
+                body = model.geom_bodyid[gid]
+                body_mat = data.xmat[body].reshape(3, 3)
+                world = pin + spin @ (data.geom_xpos[gid] - pin)
+                model.geom_pos[gid] = body_mat.T @ (world - data.xpos[body])
+                model.geom_quat[gid] = _mat_to_quat(
+                    body_mat.T @ spin @ data.geom_xmat[gid].reshape(3, 3))
+            mujoco.mj_kinematics(model, data)
+        if hinge_deg:
+            # the rod hangs in the fork's clevis and the only turn that leaves its root in
+            # the lugs is about the bolt the clevis swings on.  The strap ring is a separate
+            # part clamped on the thigh (unfastened from the rod), so only the rod turns:
+            # the ring stays on the leg.  Positive hinge_deg swings the rod's far end
+            # forward, onto the middle of the thigh's front face.
+            jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT,
+                                    f"exo_crank_pin_{side}")
+            bolt = _unit(data.xmat[model.jnt_bodyid[jid]].reshape(3, 3) @ model.jnt_axis[jid])
+            arm = data.xpos[model.body(f"exo_cuff_{side}").id] - pin
+            # pick the bolt's sense once per side so that a positive hinge_deg always swings
+            # the far end forward and a negative one tucks it back
+            angle = np.deg2rad(abs(hinge_deg))
+            if (_rodrigues(bolt, angle) @ arm) @ anterior < arm @ anterior:
+                angle = -angle
+            if hinge_deg < 0:
+                angle = -angle
+            spin = _rodrigues(bolt, angle)
+            for gid in range(model.ngeom):
+                name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, gid) or ""
+                if not name.startswith(f"exo_mesh_thigh_{side}_"):
+                    continue
+                body = model.geom_bodyid[gid]
+                body_mat = data.xmat[body].reshape(3, 3)
+                world = pin + spin @ (data.geom_xpos[gid] - pin)
+                model.geom_pos[gid] = body_mat.T @ (world - data.xpos[body])
+                model.geom_quat[gid] = _mat_to_quat(
+                    body_mat.T @ spin @ data.geom_xmat[gid].reshape(3, 3))
+            mujoco.mj_kinematics(model, data)
+        if lift_deg:
+            # the strap buckle stands off the thigh in the CAD; with the rod swung in to the
+            # middle of the thigh its lower end comes close to the knee, so lift the whole
+            # link - rod and strap together, still turning about the hinge - until it clears
+            # the bone and rides in front of it
+            arm = data.xpos[model.body(f"exo_cuff_{side}").id] - pin
+            angle = np.deg2rad(lift_deg)
+            spin = _rodrigues(lateral, angle)
+            if (spin @ arm) @ anterior < arm @ anterior:
+                spin = _rodrigues(lateral, -angle)
+            for gid in range(model.ngeom):
+                name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, gid) or ""
+                if not name.startswith((f"exo_mesh_thigh_{side}_",
+                                        f"exo_mesh_cuff_{side}_")):
+                    continue
+                body = model.geom_bodyid[gid]
+                body_mat = data.xmat[body].reshape(3, 3)
+                world = pin + spin @ (data.geom_xpos[gid] - pin)
+                model.geom_pos[gid] = body_mat.T @ (world - data.xpos[body])
+                model.geom_quat[gid] = _mat_to_quat(
+                    body_mat.T @ spin @ data.geom_xmat[gid].reshape(3, 3))
+            mujoco.mj_kinematics(model, data)
+        if standoff_mm or turn_deg:
+            # the buckle sinks into the thigh where the CAD puts it, so swing the whole
+            # link - rod and strap, bolted together - out about the crank pin until it
+            # stands clear of the leg; then turn the pair about the line from the pin
+            # through the strap until the plate faces ahead instead of edge-on.  Both
+            # turns pass through the pin, so the rod's root stays in the drum's lugs and
+            # the pair keeps its CAD relation.
+            cloud = []
+            for gid in range(model.ngeom):
+                name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, gid) or ""
+                if not name.startswith(f"exo_mesh_cuff_{side}_"):
+                    continue
+                mesh = int(model.geom_dataid[gid])
+                first, count = int(model.mesh_vertadr[mesh]), int(model.mesh_vertnum[mesh])
+                cloud.append(
+                    data.geom_xpos[gid]
+                    + model.mesh_vert[first:first + count] @ data.geom_xmat[gid].reshape(3, 3).T)
+            if cloud:
+                centre = np.vstack(cloud).mean(0) - pin
+            else:
+                centre = data.xpos[model.body(f"exo_cuff_{side}").id] - pin
+            spin = np.eye(3)
+            if standoff_mm:
+                radial = _unit((pin + centre - hip) - ((pin + centre - hip) @ thigh) * thigh)
+                angle = standoff_mm * 1e-3 / max(np.linalg.norm(centre), 1e-6)
+                axis = _unit(np.cross(centre, radial))
+                out = _rodrigues(axis, angle)
+                if (out @ centre) @ radial < centre @ radial:
+                    out = _rodrigues(axis, -angle)
+                spin = out @ spin
+            if turn_deg:
+                spin = _rodrigues(_unit(centre), np.deg2rad(turn_deg)) @ spin
+            for gid in range(model.ngeom):
+                name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, gid) or ""
+                if not name.startswith((f"exo_mesh_thigh_{side}_",
+                                        f"exo_mesh_cuff_{side}_")):
+                    continue
+                body = model.geom_bodyid[gid]
+                body_mat = data.xmat[body].reshape(3, 3)
+                world = pin + spin @ (data.geom_xpos[gid] - pin)
+                model.geom_pos[gid] = body_mat.T @ (world - data.xpos[body])
+                model.geom_quat[gid] = _mat_to_quat(
+                    body_mat.T @ spin @ data.geom_xmat[gid].reshape(3, 3))
+            mujoco.mj_kinematics(model, data)
+        jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, f"exo_slot_{side}")
+        slide = data.qpos[model.jnt_qposadr[jid]] if jid >= 0 else 0.0
+        if slide:
+            # the strap hangs on the pin-and-slot carriage, which slides along the link to
+            # take up the CAD-to-thigh length error; at the worn pose that slide walks the
+            # strap off the rod's bolt holes.  Put the strap back on the rod's CAD station
+            # so the two stay bolted together.
+            axis = data.xmat[model.jnt_bodyid[jid]].reshape(3, 3) @ model.jnt_axis[jid]
+            for gid in range(model.ngeom):
+                name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, gid) or ""
+                if not name.startswith(f"exo_mesh_cuff_{side}_"):
+                    continue
+                body = model.geom_bodyid[gid]
+                body_mat = data.xmat[body].reshape(3, 3)
+                world = data.geom_xpos[gid] - slide * axis
+                model.geom_pos[gid] = body_mat.T @ (world - data.xpos[body])
+            mujoco.mj_kinematics(model, data)
+        ahead = _unit(anterior - (anterior @ thigh) * thigh)
+        side_axis = np.cross(thigh, ahead)
+        points = []
+        for gid in range(model.ngeom):
+            name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, gid) or ""
+            if not name.startswith(f"exo_mesh_cuff_{side}_"):
+                continue
+            mesh = int(model.geom_dataid[gid])
+            first, count = int(model.mesh_vertadr[mesh]), int(model.mesh_vertnum[mesh])
+            points.append(
+                data.geom_xpos[gid]
+                + model.mesh_vert[first:first + count] @ data.geom_xmat[gid].reshape(3, 3).T
+            )
+        if not points:
+            continue
+        radial = np.vstack(points) - hip
+        radial -= (radial @ thigh)[:, None] * thigh
+        radii = np.linalg.norm(radial, axis=1)
+        direction = radial[radii > 0.88 * radii.max()].mean(0)
+        direction -= (direction @ thigh) * thigh
+        direction /= np.linalg.norm(direction)
+        azimuth = float(np.arctan2(direction @ side_axis, direction @ ahead))
+        # the strap is pushed straight out of the thigh, along the line from the leg's
+        # centre to the strap's own centre
+        outward = radial.mean(0)
+        outward -= (outward @ thigh) * thigh
+        outward /= np.linalg.norm(outward)
+        spin = _rodrigues(thigh, -azimuth) if align_front else np.eye(3)
+        for gid in range(model.ngeom):
+            name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, gid) or ""
+            if not name.startswith(f"exo_mesh_cuff_{side}_"):
+                continue
+            body = model.geom_bodyid[gid]
+            body_mat = data.xmat[body].reshape(3, 3)
+            world = hip + spin @ (data.geom_xpos[gid] - hip)
+            world = world + out_mm * 1e-3 * (spin @ outward)
+            model.geom_pos[gid] = body_mat.T @ (world - data.xpos[body])
+            model.geom_quat[gid] = _mat_to_quat(
+                body_mat.T @ spin @ data.geom_xmat[gid].reshape(3, 3))
+        taken += np.degrees(azimuth)
+    mujoco.mj_forward(model, data)
+    return float(taken / max(len(SIDES), 1))
+
+
+def seat_cuff_on_rod(model: mujoco.MjModel, sides: tuple[str, ...] = SIDES) -> float:
+    """Slide each thigh strap down the leg until it meets the rod's distal buckle.
+
+    The rod ends in a buckle that clamps the strap, but the strap is drawn at its CAD
+    station, ~8 cm short of where the rod ends once the rod is turned onto the muscle.  The
+    band is a separate part on the cuff body, so it can be slid along the leg without
+    touching the weld: it lands on the buckle and still wraps the thigh.
+
+    Returns the mean slide distance in millimetres.
+    """
+    data = mujoco.MjData(model)
+    if model.nkey:
+        # seated on the pose the machine is reset into, so the buckle reads right there
+        data.qpos[:] = model.key_qpos[min(_RESET_KEY, model.nkey - 1)]
+    mujoco.mj_kinematics(model, data)
+    model_pose = data
+    moved = 0.0
+    for side in sides:
+        hip = model_pose.xpos[model.body(f"femur_{side}").id].copy()
+        knee = model_pose.xpos[model.body(f"tibia_{side}").id].copy()
+        thigh = _unit(knee - hip)
+
+        def _verts(prefix: str) -> np.ndarray:
+            out = []
+            for gid in range(model.ngeom):
+                name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, gid) or ""
+                if not name.startswith(prefix):
+                    continue
+                lo = int(model.mesh_vertadr[int(model.geom_dataid[gid])])
+                n = int(model.mesh_vertnum[int(model.geom_dataid[gid])])
+                v = np.asarray(model.mesh_vert[lo:lo + n], float)
+                out.append(model_pose.geom_xpos[gid] + (
+                    model_pose.geom_xmat[gid].reshape(3, 3) @ v.T).T)
+            return np.vstack(out)
+
+        rod = _verts(f"exo_mesh_thigh_{side}_")
+        band = _verts(f"exo_mesh_cuff_{side}_")
+        tip = rod[np.argmax((rod - hip) @ thigh)]
+        shift = tip - band[int(np.argmin(np.linalg.norm(band - tip, axis=1)))]
+        for gid in range(model.ngeom):
+            name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, gid) or ""
+            if not name.startswith(f"exo_mesh_cuff_{side}_"):
+                continue
+            body = model.geom_bodyid[gid]
+            body_mat = model_pose.xmat[body].reshape(3, 3)
+            world = model_pose.geom_xpos[gid] + shift
+            model.geom_pos[gid] = body_mat.T @ (world - model_pose.xpos[body])
+        moved += float(np.linalg.norm(shift)) * 1000.0
+    mujoco.mj_forward(model, data)
+    return moved / max(len(sides), 1)
+
+
+def pitch_exo(model: mujoco.MjModel, pitch_deg: float = 0.0,
+              forward_mm: float = 0.0,
+              groups: tuple[str, ...] = ("exo_mesh_",)) -> None:
+    """Tip the whole exoskeleton about the hip axis so the back plate lies on the lumbar spine.
+
+    The frame is drawn in the CAD's assembly pose, which leaves the back plate leaning off
+    the back by about 15 degrees, its lower edge standing out behind the body.  Pitching it
+    - plate, arms, motor housings, drums, thigh links and straps - about the lateral axis
+    through the hips lays the plate onto the back, and ``forward_mm`` then slides the whole
+    device towards the body until the pad rests on the spine.
+
+    The whole device is turned and slid as one rigid unit, so every CAD fit survives: the
+    drums stay concentric in their housings, the arms stay on the drums' axles and the link
+    roots stay in the drums' lugs.  The price is that the links, hanging some 350 mm below
+    the hips, come forward with it; that is taken out afterwards about the clevis bolt by
+    ``place_strap_on_muscle(..., hinge_deg=...)``, which turns each link about its own pin
+    axis and therefore keeps the root seated.  Call this after that function.
+    """
+    if not pitch_deg and not forward_mm:
+        return
+    data = mujoco.MjData(model)
+    if model.nkey:
+        data.qpos[:] = model.key_qpos[0]
+    mujoco.mj_kinematics(model, data)
+    pelvis_mat = data.xmat[model.body("pelvis").id].reshape(3, 3)
+    axis = pelvis_mat @ np.array([0.0, 0.0, 1.0])
+    hip = 0.5 * (data.xpos[model.body("femur_r").id] + data.xpos[model.body("femur_l").id])
+    spin = _rodrigues(axis, np.deg2rad(pitch_deg))
+    shift = pelvis_mat @ np.array([forward_mm * 1e-3, 0.0, 0.0])
+    for gid in range(model.ngeom):
+        name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, gid) or ""
+        if not name.startswith(groups):
+            continue
+        body = model.geom_bodyid[gid]
+        body_mat = data.xmat[body].reshape(3, 3)
+        world = hip + spin @ (data.geom_xpos[gid] - hip) + shift
+        model.geom_pos[gid] = body_mat.T @ (world - data.xpos[body])
+        model.geom_quat[gid] = _mat_to_quat(
+            body_mat.T @ spin @ data.geom_xmat[gid].reshape(3, 3))
+    mujoco.mj_kinematics(model, data)
+
+
+def clock_exo_endcap(model: mujoco.MjModel, extra_deg: float = 0.0, key: int = 0,
+                     sides: tuple[str, ...] = SIDES) -> dict[str, float]:
+    """Turn each motor module's end cover about the drum axis so its relief sits under the fork.
+
+    The CAD assembles the chain on a flexed hip, so the cranks never sit at flexion 0 in the sim:
+    the walking keyframes hold them near -60 deg / +60 deg.  The cover's relief, though, is drawn
+    where the fork's ear sits at flexion 0 - measured on the meshes, the ear rests on the relief
+    floor 0.27 mm there and walks off to 12.1 mm (right) / 9.2 mm (left) at the reset flexion,
+    which is why the fork read as "out of the notch".  Re-clocking the cover by ``key``'s own
+    flexion, about that side's own flexion axis through the drum centre, recovers the CAD fit; the
+    two walking keyframes the env can reset from are 4 deg apart, so both stay well inside the
+    relief, while the standing keyframes land on its edge.
+
+    Only ``exo_mesh_hipcap_{side}`` moves - the chamfered cover and nothing else.  The rest of the
+    module (the finned motor cylinder and the mounting arm, ``exo_mesh_hipmod_{side}_0``) sits on a
+    pad welded to the waist frame and must stay exactly where the bracket stays, so the housing
+    keeps its shipped pose whatever angle is applied here.  The cover's own seat is an annular lip
+    at R 36-41 mm spanning ~270 deg of azimuth and concentric with the hinge to within 1.3 mm, so
+    turning it costs little but not nothing: at the 61 deg reset clock the lip's clearance to the
+    module goes from 0.69 mm median to 1.26 mm (2.1 mm at the 90th percentile) over its 12.6k
+    seated vertices.  The cover geom is visual-only and its body inertia comes from the params
+    file, so this changes neither the mesh nor the dynamics.
+
+    Returns the angle applied per side, in degrees.
+    """
+    if key >= model.nkey:
+        return {}
+    hinges = {mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, j) or ""
+              for j in range(model.njnt)}
+    data = mujoco.MjData(model)
+    data.qpos[:] = model.key_qpos[key]
+    mujoco.mj_kinematics(model, data)
+    turned: dict[str, float] = {}
+    for side in sides:
+        name_j = f"exo_hip_flexion_{side}"
+        if name_j not in hinges:
+            # the locked variant welds the chain at joint zero, which is where the CAD already
+            # nests the fork on the cover, so its cap needs no clock
+            continue
+        joint = model.joint(name_j)
+        angle = float(model.key_qpos[key][int(joint.qposadr[0])]) + np.deg2rad(extra_deg)
+        if not angle:
+            continue
+        carrier = model.jnt_bodyid[joint.id]
+        axis = data.xmat[carrier].reshape(3, 3) @ model.jnt_axis[joint.id]
+        axis = _unit(axis)
+        centre = data.xpos[carrier]
+        spin = _rodrigues(axis, angle)
+        want = f"exo_mesh_hipcap_{side}"
+        for gid in range(model.ngeom):
+            name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, gid) or ""
+            if name != want:
+                continue
+            body = model.geom_bodyid[gid]
+            body_mat = data.xmat[body].reshape(3, 3)
+            world = centre + spin @ (data.geom_xpos[gid] - centre)
+            model.geom_pos[gid] = body_mat.T @ (world - data.xpos[body])
+            model.geom_quat[gid] = _mat_to_quat(
+                body_mat.T @ spin @ data.geom_xmat[gid].reshape(3, 3))
+        turned[side] = float(np.degrees(angle))
+    mujoco.mj_kinematics(model, data)
+    return turned
+
+
+def style_muscle_geoms(model: mujoco.MjModel, muscle_width: float = 0.012) -> int:
+    """Show the muscles as tissue, or hide them for the bare-skeleton look.
 
     MyoSuite represents each muscle twice: as a wrap geom (a cylinder along the belly, a
-    sphere at a joint) and as a spatial tendon.  The tendon is what shows - MuJoCo draws
-    the 80 of them as 5 mm red lines, which at a glance is a tangle of blood vessels
-    rather than tissue - so their width is zeroed here.  The wrap geoms are made fully
-    transparent as well.  The wrap cylinders are pinned to ``_MUSCLE_WRAP_RADIUS`` first,
-    because an invisible wrap still routes its muscle path, and hence still moves the
-    dynamics, and 12 mm is the radius the walking policy was verified with.
+    sphere at a joint) and as a spatial tendon.  The tendon is what shows.  With
+    ``muscle_width > 0`` the tendons are drawn at that width in their default muscle
+    red - at 12 mm (the wrap radius the walking policy was verified with) they read as
+    muscle bellies riding the bones instead of a tangle of 5 mm blood vessels - and the
+    wrap cylinders stay fully transparent: an invisible wrap still routes its muscle
+    path and moves the dynamics, so the pinned 12 mm radius and transparent colour are
+    what keep the verified dynamics while the tissue is drawn from the tendon paths
+    alone.  With ``muscle_width == 0`` the tendons are hidden too.
 
     Returns the number of wrap geoms hidden.
     """
-    model.tendon_width[:] = 0.0
+    model.tendon_width[:] = float(muscle_width)
     n = 0
     for gid in range(model.ngeom):
         name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, gid) or ""
@@ -773,7 +1214,8 @@ def _pad_keyframes(spec: mujoco.MjSpec, added_dof: int) -> None:
 
 
 def _seed_keyframe_exo_dofs(
-    spec: mujoco.MjSpec, added_dof: int, seed_map: dict[str, dict[str, float]]
+    spec: mujoco.MjSpec, added_dof: int, seed_map: dict[str, dict[str, float]],
+    attach_sites: dict[str, Any] | None = None,
 ) -> None:
     """Pad the keyframes and place the exo hinges so the cuff welds start closed.
 
@@ -821,13 +1263,11 @@ def _seed_keyframe_exo_dofs(
     for key in spec.keys:
         if key.qpos is not None:
             qpos = np.array(key.qpos, dtype=float)
+            # keyed by name, not position: joint_names is [abduction, flexion, crank pin,
+            # slot, roll], so a positional list silently seeds the wrong hinge
             for side, seed in seed_map.items():
-                names = list(seed["joints"])
-                adrs = [_qadr(n) for n in names]
-                for adr, val in zip(adrs, seed["values"]):
-                    qpos[adr] = val
-                _refine_cuff_gap(qpos, names, adrs, side, _gap, limits)
-                _clamp(qpos, names)
+                for n, val in seed["values"].items():
+                    qpos[_qadr(n)] = val
             key.qpos = qpos
         if key.qvel is not None:
             qvel = np.array(key.qvel, dtype=float)
@@ -835,6 +1275,59 @@ def _seed_keyframe_exo_dofs(
                 for n in seed["joints"]:
                     qvel[_dadr(n)] = 0.0
             key.qvel = qvel
+
+    def _fit_names(side: str, freeze_flexion: bool) -> list[str]:
+        names = list(seed_map[side]["joints"])
+        # abduction is the fork's seat on the motor's end cap: never spend it on cuff reach.
+        # Once the crank/drum clock is seeded, flexion is frozen too and the pin absorbs it.
+        drop = ("exo_hip_abduction", "exo_hip_flexion") if freeze_flexion else ("exo_hip_abduction",)
+        return [n for n in names if not n.startswith(drop)]
+
+    def _refit_keys(freeze_flexion: bool = False) -> None:
+        for key in spec.keys:
+            if key.qpos is None:
+                continue
+            qpos = np.array(key.qpos, dtype=float)
+            for side in seed_map:
+                fit = _fit_names(side, freeze_flexion)
+                adrs = [_qadr(n) for n in fit]
+                _refine_cuff_gap(qpos, fit, adrs, side, _gap, limits)
+                _clamp(qpos, list(seed_map[side]["joints"]))
+            key.qpos = qpos
+
+    _refit_keys()
+
+    if attach_sites and _CRANK_CLOCK_DEG:
+        # clock the crank (and with it the drum's end cover, whose clock reads this same
+        # flexion key) about the motor axis on the reset keyframe only; the pin then absorbs
+        # the turn so the link and the thigh ring keep their pose.
+        key = spec.keys[_RESET_KEY if _RESET_KEY < len(spec.keys) else 0]
+        if key.qpos is not None:
+            qpos = np.array(key.qpos, dtype=float)
+            for side in seed_map:
+                name = f"exo_hip_flexion_{side}"
+                lo, hi = model.jnt_range[model.joint(name).id]
+                adr = _qadr(name)
+                shift = float(np.deg2rad(_CRANK_CLOCK_DEG * _CRANK_CLOCK_SIGN[side]))
+                qpos[adr] = float(np.clip(qpos[adr] + shift, lo + 1e-6, hi - 1e-6))
+            key.qpos = qpos
+        _refit_keys(freeze_flexion=True)
+
+    if attach_sites:
+        # close the residual strap gap by moving the anchor onto the ring at the reset key
+        model = spec.compile()
+        data = mujoco.MjData(model)
+        data.qpos[:] = model.key_qpos[_RESET_KEY if _RESET_KEY < model.nkey else 0]
+        mujoco.mj_kinematics(model, data)
+        for side, site in attach_sites.items():
+            femur = model.body(f"femur_{side}").id
+            cuff = model.site(f"exo_cuff_site_{side}").id
+            local = np.asarray(data.xmat[femur]).reshape(3, 3).T @ (
+                data.site_xpos[cuff] - data.xpos[femur])
+            site.pos = local
+        model = spec.compile()
+        data = mujoco.MjData(model)
+        _refit_keys(freeze_flexion=True)
 
 
 def _refine_cuff_gap(

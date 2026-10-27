@@ -1,10 +1,14 @@
 """Interactive viewer for the Lin-I exoskeleton walking in MyoSuite.
 
-Opens a real-time MuJoCo window and plays the baseline policy on
+Opens a real-time MuJoCo window and plays the exo walk policy on
 ``myoLegWalkExo-v0`` (zero assistance) so the coupling can be watched - and the camera
-dragged around - instead of only read off a rendered PNG.
+dragged around - instead of only read off a rendered PNG.  Without ``--policy`` the
+``walk_exo_policy.zip`` fine-tune next to the repo is used when it exists, which is the
+same policy ``scripts/eval_walk_exo.py`` renders the walk video with; otherwise the
+published baseline is used (that one falls at ~4 s).
 
-    python scripts/view_walk_exo.py                 # policy on, real time
+    python scripts/view_walk_exo.py                 # exo policy, real time
+    python scripts/view_walk_exo.py --camera side_view   # the walk-video camera
     python scripts/view_walk_exo.py --no-policy     # free camera, no motion
     python scripts/view_walk_exo.py --speed 0.2     # slow motion
     python scripts/view_walk_exo.py --hide-exo      # see the same run without the exo
@@ -17,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import time
+from pathlib import Path
 
 import mujoco
 import mujoco.viewer
@@ -24,10 +29,27 @@ import numpy as np
 
 import myosuite  # noqa: F401  (registers the CPU envs)
 from myosuite import make_env
+from myosuite.envs.myo.tasks.basic.leg.lin1_exo import style_muscle_geoms
 from myosuite.utils.checkpoint_utils import find_checkpoint, load_policy
 
 # control period of the walk envs: 1 ms physics x 10 frame skip
 CONTROL_DT = 0.01
+
+
+def default_policy(policy: str | None) -> str | None:
+    """Fill in the exo fine-tune when the caller passes no ``--policy``.
+
+    The published ``myoLegWalk-v0`` baseline used otherwise falls at ~4 s, so it never
+    shows the walk the video does.  Both this script and ``eval_walk_exo.py`` normalise
+    the observations with the published checkpoint statistics, so they agree.
+    """
+    if policy:
+        return policy
+    local = Path(__file__).resolve().parents[1] / "walk_exo_policy.zip"
+    if local.exists():
+        print(f"policy: {local} (exo fine-tune; pass --policy to override)")
+        return str(local)
+    return None
 
 
 def main() -> int:
@@ -46,8 +68,24 @@ def main() -> int:
     ap.add_argument("--closed-scene", action="store_true",
                     help="keep the model's uneven terrain heightfield; the default is an "
                          "open scene with only the flat floor plane as ground")
+    ap.add_argument("--hide-muscles", action="store_true",
+                    help="hide the 12 mm red muscle lines and show the bare skeleton; the "
+                         "muscles are drawn by default")
     ap.add_argument("--distance", type=float, default=3.2,
                     help="tracking-camera distance in metres")
+    ap.add_argument("--camera", default=None,
+                    help="use a model camera by name (e.g. side_view, the walk-video "
+                         "view) instead of the tracking camera.  A named camera is FIXED, "
+                         "so dragging the mouse does nothing - omit it to get the draggable "
+                         "tracking camera")
+    ap.add_argument("--lookat", type=float, nargs=3, default=None,
+                    metavar=("X", "Y", "Z"),
+                    help="aim a FREE camera at this point instead of tracking the torso; "
+                         "the mouse then orbits around it")
+    ap.add_argument("--azimuth", type=float, default=180.0,
+                    help="starting azimuth in degrees (drag changes it)")
+    ap.add_argument("--elevation", type=float, default=-10.0,
+                    help="starting elevation in degrees (drag changes it)")
     args = ap.parse_args()
 
     env = make_env(args.env).unwrapped
@@ -70,7 +108,12 @@ def main() -> int:
                 hidden += 1
         print(f"open scene: hid {hidden} terrain geom(s)")
 
+    if args.hide_muscles:
+        # the env draws the 12 mm red muscle lines; this strips them for the bone-only look
+        print(f"muscle style: hid {style_muscle_geoms(model, 0.0)} wrap geom(s)")
+
     obs, _ = env.reset(seed=0)
+    args.policy = default_policy(args.policy)
     policy = None
     if not args.no_policy:
         if args.policy:
@@ -110,14 +153,30 @@ def main() -> int:
     with mujoco.viewer.launch_passive(model, data, key_callback=on_key,
                                      show_left_ui=False,
                                      show_right_ui=False) as viewer:
-        # aim at the walker: the default free camera looks at the origin, which is the
-        # floor, and a hand-set lookat gets overridden by the viewer, so a tracking camera
-        # is used - it follows the torso whatever the pose
-        viewer.cam.type = mujoco.mjtCamera.mjCAMERA_TRACKING
-        viewer.cam.trackbodyid = model.body("torso").id
-        viewer.cam.distance = args.distance
-        viewer.cam.azimuth = 180.0
-        viewer.cam.elevation = -12.0
+        if args.camera:
+            cid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, args.camera)
+            if cid < 0:
+                raise SystemExit(f"no camera named {args.camera!r}")
+            viewer.cam.type = mujoco.mjtCamera.mjCAMERA_FIXED
+            viewer.cam.fixedcamid = cid
+            print(f"camera: {args.camera} (fixed - the mouse cannot orbit it)")
+        elif args.lookat is not None:
+            # a FREE camera pointed at one spot: the mouse orbits around that point
+            viewer.cam.type = mujoco.mjtCamera.mjCAMERA_FREE
+            viewer.cam.lookat[:] = np.asarray(args.lookat, dtype=float)
+            viewer.cam.distance = args.distance
+            viewer.cam.azimuth = args.azimuth
+            viewer.cam.elevation = args.elevation
+            print(f"camera: free, looking at {list(args.lookat)} - drag to orbit")
+        else:
+            # aim at the walker: the default free camera looks at the origin, which is the
+            # floor, and a hand-set lookat gets overridden by the viewer, so a tracking
+            # camera is used - it follows the torso whatever the pose
+            viewer.cam.type = mujoco.mjtCamera.mjCAMERA_TRACKING
+            viewer.cam.trackbodyid = model.body("torso").id
+            viewer.cam.distance = args.distance
+            viewer.cam.azimuth = args.azimuth
+            viewer.cam.elevation = args.elevation
         while viewer.is_running():
             step_start = time.perf_counter()
             if policy is not None and not paused["on"]:

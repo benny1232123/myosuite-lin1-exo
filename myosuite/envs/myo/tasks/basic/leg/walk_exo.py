@@ -33,10 +33,80 @@ from myosuite.core.model_builder import ModelBuilder
 from myosuite.envs.gymnasium_env import CpuEnvAccessor
 from myosuite.envs.myo.tasks.basic.leg.lin1_exo import (
     attach_lin1_exo,
+    clock_exo_endcap,
     load_exo_params,
+    pitch_exo,
+    place_strap_on_muscle,
+    seat_cuff_on_rod,
     style_muscle_geoms,
 )
 from myosuite.envs.myo.tasks.basic.leg.walk import LegWalkEnvV0
+
+
+# The CAD pose stands with the feet 176 mm apart, which leaves the two thighs almost
+# touching.  Opening the stance a little reads better and gives the thigh straps room.
+_STANCE_WIDEN_RAD = 0.085
+
+# The rod is bolted to the drum's clevis at the hip, so it can only turn about that bolt.
+# Any extra swing, lift or standoff of the drawn link tips the fork out of the drum's
+# lugs, which is what kept making the joint read as "not plugged in".  The whole device is
+# instead pitched about the hip axis - one rigid turn, so the drums stay concentric in
+# their housings and the fork stays in the lugs - until the back plate lies on the lumbar
+# spine; the link, hanging 350 mm below the hips, comes out of that about 90 mm in front of
+# the thigh, and the hinge turn about the clevis bolt tucks it back onto the thigh.
+_ASSY_PITCH_DEG = 0.0
+# the plate is slid this far towards the body after the pitch, together with the rest of
+# the device, so the pad rests on the lower back
+_ASSY_FORWARD_MM = 0.0
+# the rod's lower end swings about the clevis point (user: 以铰链为圆心…摆动, then 应该向反方向
+# 摆).  Positive turns the far end towards the exo's centre line, negative outwards; shipped
+# negative.  Only the rod turns - the strap ring stays clamped on the thigh (0.1 mm), and
+# the rod-to-femur clearance at -10 deg is the same 1 mm as the CAD pose, so nothing is
+# pressed into the bone.  Positive 20 deg and up swings the rods across each other.
+_ROD_SWING_DEG = 0.0
+_STRAP_OUT_MM = 0.0
+# roll spins the rod about its own axis, which twists its root out of the clevis (the user
+# saw exactly that and rejected it), and it cannot close the gap anyway: the waist frame
+# holds the hip module 115 mm out from the hip joint.  Keep it at zero and fix the pin.
+_ROD_ROLL_DEG = 0.0
+_ROD_LIFT_DEG = 0.0
+_ROD_STANDOFF_MM = 0.0
+# a turn about the clevis bolt keeps the fork seated; it swings the rod's far end forward
+# along the thigh, which walks the rod from the thigh's outer edge onto the middle of its
+# front face.  15 deg is where the bar covers the quadriceps without crossing the midline
+# (25 deg puts it on the inner thigh, 35 deg over the knee).  Only the rod turns - the
+# strap ring stays clamped on the leg.
+_ROD_HINGE_DEG = 15.0
+_MUSCLE_WIDTH = 0.008
+# the module end caps clock onto the fork by default (see clock_exo_endcap); this is only a
+# residual nudge added on top of that
+_ENDCAP_CLOCK_DEG = 0.0
+# walk.py resets from keyframe 2 ("init", the default) or draws 2 and 3 ("random"), so that is
+# the crank angle the fork has to be seated at -- the standing keys 0/1 are 18-24 deg away
+_ENDCAP_CLOCK_KEY = 2
+# the buckle's plate faces sideways in CAD, so it reads as a sliver from the front; turn
+# rod and strap together about the line from the pin through the strap to face it ahead
+_PLATE_TURN_DEG = 0.0
+
+
+
+def _widen_stance(spec: mujoco.MjSpec, amount: float) -> None:
+    """Open the stance in every keyframe: the hip adduction joints carry the leg width.
+
+    The exo hangs off the pelvis, so its own abduction hinge follows the leg instead of
+    setting the width; widening the legs is therefore a change of the human pose only.
+    """
+    model = spec.compile()
+    limits = {}
+    for name in ("hip_adduction_r", "hip_adduction_l"):
+        jid = model.joint(name).id
+        limits[int(model.jnt_qposadr[jid])] = model.jnt_range[jid]
+    for key in spec.keys:
+        qpos = key.qpos
+        if qpos is None:
+            continue
+        for adr, (low, high) in limits.items():
+            qpos[adr] = float(np.clip(qpos[adr] - amount, low, high))
 
 
 class LegWalkExoEnvV0(LegWalkEnvV0):
@@ -95,6 +165,7 @@ class LegWalkExoEnvV0(LegWalkEnvV0):
         meta: dict[str, Any] = {}
 
         def _attach(spec: mujoco.MjSpec) -> mujoco.MjSpec:
+            _widen_stance(spec, _STANCE_WIDEN_RAD)
             attach_kwargs = {}
             if self._exo_kwargs["exo_thigh_radius"] is not None:
                 attach_kwargs["thigh_radius"] = float(self._exo_kwargs["exo_thigh_radius"])
@@ -116,7 +187,16 @@ class LegWalkExoEnvV0(LegWalkEnvV0):
             return spec
 
         model, spec = ModelBuilder.from_xml_file(model_path).apply_transform(_attach).build()
-        style_muscle_geoms(model)
+        style_muscle_geoms(model, _MUSCLE_WIDTH)
+        place_strap_on_muscle(model, _ROD_SWING_DEG, _STRAP_OUT_MM, align_front=False,
+                              roll_deg=_ROD_ROLL_DEG, lift_deg=_ROD_LIFT_DEG,
+                              standoff_mm=_ROD_STANDOFF_MM, turn_deg=_PLATE_TURN_DEG,
+                              hinge_deg=_ROD_HINGE_DEG)
+        # the strap ring is worn where the rod ends, not at the CAD station
+        seat_cuff_on_rod(model)
+        pitch_exo(model, _ASSY_PITCH_DEG, _ASSY_FORWARD_MM)
+        meta["endcap_clock_deg"] = clock_exo_endcap(
+            model, _ENDCAP_CLOCK_DEG, _ENDCAP_CLOCK_KEY)
         self._exo_meta = meta
         return model, spec
 

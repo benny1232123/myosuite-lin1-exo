@@ -292,10 +292,12 @@ def test_every_cad_group_is_drawn_with_its_real_mesh(exo_env) -> None:
     mesh_dir = exo_mod.EXO_ASSET_DIR / "meshes"
     # one CAD group per rigid body, and the SolidWorks export splits a heavy group
     # across <group>_0.stl, <group>_1.stl, ... because of MuJoCo's face limit
-    bodies = {"frame": "exo_frame", "bracket_r": "exo_frame", "bracket_l": "exo_frame",
-              "hipmod_r": "exo_frame", "hipmod_l": "exo_frame"}
+    bodies = {"frame": "exo_frame", "bracket_r": "exo_frame", "bracket_l": "exo_frame"}
     for side in SIDES:
+        # the drum is the motor output and turns with the hip hinge; its housing stays on
+        # the waist frame, and the long rod hangs off the drum's clevis pin
         bodies[f"crank_{side}"] = f"exo_crank_{side}"
+        bodies[f"hipmod_{side}"] = "exo_frame"
         bodies[f"thigh_{side}"] = f"exo_link_{side}"
         bodies[f"cuff_{side}"] = f"exo_cuff_{side}"
 
@@ -323,6 +325,39 @@ def test_every_cad_group_is_drawn_with_its_real_mesh(exo_env) -> None:
             assert model.geom_bodyid[gid] == model.body(body_name).id, geom
             checked += 1
     assert checked >= len(EXO_BODIES), f"only {checked} CAD mesh geoms were drawn"
+
+
+def test_the_module_end_cover_is_its_own_housing_geom(exo_env) -> None:
+    """The cover the fork nests on is a separate geom from the motor housing.
+
+    ``clock_exo_endcap`` turns that cover about the drum axis so its relief keeps tracking the
+    crank fork; everything else in the module - the finned motor cylinder and the mounting arm -
+    is welded to the waist frame and must not move, so the cover has to be addressable on its own.
+    """
+    from myosuite.envs.myo.tasks.basic.leg import lin1_exo as exo_mod
+
+    model = exo_env.model
+    frame = model.body("exo_frame").id
+    for side in SIDES:
+        if not (exo_mod.EXO_ASSET_DIR / "meshes" / f"hipcap_{side}.stl").is_file():
+            continue
+        cap = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, f"exo_mesh_hipcap_{side}")
+        housing = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, f"exo_mesh_hipmod_{side}_0")
+        assert cap >= 0 and housing >= 0, side
+        assert model.geom_type[cap] == mujoco.mjtGeom.mjGEOM_MESH
+        assert model.geom_bodyid[cap] == frame, "the cover belongs to the waist frame"
+        # the split must be a partition, not an addition: the cover may not be drawn twice
+        verts = {}
+        for gid in (cap, housing):
+            mesh = int(model.geom_dataid[gid])
+            lo, n = int(model.mesh_vertadr[mesh]), int(model.mesh_vertnum[mesh])
+            verts[gid] = model.mesh_vert[lo:lo + n]
+        # shared boundary vertices are expected (the cut face), overlapping *faces* are not: the
+        # two clouds may not coincide more than the seam allows
+        from scipy.spatial import cKDTree
+
+        near = cKDTree(verts[housing]).query(verts[cap], k=1)[0]
+        assert (near < 1e-4).mean() < 0.05, f"{(near < 1e-4).mean():.1%} of the cover is duplicated"
 
 
 def test_exo_body_masses_match_the_cad_parameter_file(exo_env) -> None:

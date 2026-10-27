@@ -28,6 +28,7 @@ import numpy as np
 
 import myosuite  # noqa: F401  (registers the CPU envs)
 from myosuite import make_env
+from myosuite.envs.myo.tasks.basic.leg.lin1_exo import style_muscle_geoms
 from myosuite.utils.checkpoint_utils import find_checkpoint, load_policy
 
 DEFAULT_ENV = "myoLegWalkExo-v0"
@@ -280,6 +281,8 @@ def _render(env, frames_dir: str, log: dict) -> None:
     out = Path(frames_dir)
     out.mkdir(parents=True, exist_ok=True)
     model, data = env.model, env.data
+    # the same thin red muscle lines the interactive viewer uses (view-only)
+    style_muscle_geoms(model, 0.008)
     # the bundled model asks for a 640x640 offscreen buffer, which forbids a 720px render
     model.vis.global_.offwidth = max(int(model.vis.global_.offwidth), 720)
     model.vis.global_.offheight = max(int(model.vis.global_.offheight), 720)

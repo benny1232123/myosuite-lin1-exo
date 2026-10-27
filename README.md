@@ -19,6 +19,31 @@
 
 <img width="1240" alt="TasksALL" src="./docs/source/images/MyoSuiteHeader.png?raw=true">
 
+## Lin-I hip exoskeleton (this fork)
+
+This fork adds a passive hip exoskeleton ("Lin-I") worn by the musculoskeletal walker, and the
+tooling used to seat it, watch it and train a controller for it.
+
+* `myoLegWalkExo-v0` — `myoLegWalk-v0` plus the device: two hip modules on the waist frame, a
+  flexion + abduction hip joint, a parallel thigh link hanging off a crank clevis, a pin-in-slot
+  slide and a thigh strap coupled to the femur by a compliant weld. `myoLegWalkExoLocked-v0` is the
+  same device drawn rigidly, for visual comparison. Code: `myosuite/envs/myo/tasks/basic/leg/
+  lin1_exo.py`, `walk_exo.py`; meshes in `myosuite/envs/myo/assets/leg/lin1_exo/meshes`.
+* `scripts/view_walk_exo.py` — interactive viewer (`--no-policy` holds the reset pose).
+* `scripts/eval_walk_exo.py` — 15 s acceptance run (survives 1500 control steps, >= 5 m, both exo
+  motors unpowered, alternating foot contacts). The shipped `walk_exo_policy.zip` passes all four:
+  1500/1500 steps, 21.9 m, 0 Nm exo torque, alternating contacts.
+* `scripts/finetune_walk_exo.py` — PPO fine-tune of the published `myoLegWalk-v0` policy onto the
+  exo env (`--resume`, 1.5 M steps, 4 envs, `--target-kl 0.08`). Evaluate its checkpoints with
+  `eval_walk_exo.py --policy <ckpt>.zip`; the final checkpoint can regress, so keep the earliest
+  one that passes.
+* `myosuite/tests/test_lin1_exo.py` — the device's own test suite (`pytest`).
+
+Wearing details measured from the build: the rod hangs in the fork clevis and turns about its
+bolt, the drum end cover clocks with the fork, and the strap ring is seated on the rod's distal
+buckle — all geometry-only, so the physics stays that of the passive device.
+
+
 
 <details>
   <summary><h2>What's new in MyoSuite 3</h2></summary>
