@@ -492,3 +492,27 @@ def test_the_thermal_model_is_off_by_default_and_resets_cold() -> None:
     env.reset(seed=0)
     assert np.allclose(env._winding_temp, motor.ambient_C)
     assert env.assist_summary()["winding_temp"].size == 0
+
+
+def test_resistance_rises_with_temperature() -> None:
+    cold = motor.resistance_at(25.0)
+    hot = motor.resistance_at(motor.winding_max_C)
+    assert cold == pytest.approx(motor.winding_resistance)
+    assert hot == pytest.approx(cold * 1.295, rel=2e-3)      # copper, 75 K above 25 C
+    assert motor.resistance_at(60.0) > cold
+
+
+def test_a_hot_winding_needs_more_voltage_for_the_same_torque() -> None:
+    cold = motor.voltage_for_torque(12.0, 0.0)
+    hot = motor.voltage_for_torque(12.0, 0.0,
+                                   resistance=motor.effective_resistance_at(100.0))
+    assert hot > cold + 4.0, (cold, hot)
+
+    # and the env writes that resistance into the <dcmotor> gain term before stepping
+    env = make_env(EXO_ENV, exo_motor=True, exo_assist_torque=12.0,
+                   exo_thermal_derate=True).unwrapped
+    env.reset(seed=0)
+    env._winding_temp[:] = 90.0
+    env.step(np.zeros(env.action_space.shape, dtype=np.float32))
+    assert np.all(env.model.actuator_gainprm[env._exo_ctrl_adr, 0]
+                  > motor.effective_resistance * 1.2)

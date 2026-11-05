@@ -226,6 +226,7 @@ class ExoMotorConfig:
     ambient_C: float = 25.0
     winding_max_C: float = 100.0
     thermal_time_constant_s: float = 175.0
+    copper_temp_coeff_per_K: float = 0.00393
     inductance: float | None = None
     cogging_torque: float = 0.0
     calibrated: bool = False
@@ -318,18 +319,36 @@ class ExoMotorConfig:
         """Envelope slope, N·m per rad/s of joint speed (negative)."""
         return -(self.gear_ratio ** 2) * self.torque_constant ** 2 / self.effective_resistance
 
-    def envelope(self, voltage: float, joint_speed: float) -> float:
+    def resistance_at(self, winding_temp_C: float) -> float:
+        """Winding resistance at a winding temperature, ohm.
+
+        Copper rises at ``alpha = 0.00393 / K`` about 25 °C, so a winding that has heated to
+        its 100 °C limit carries about 29% more resistance than the cold one the parameters
+        were fitted at; the same torque then needs a larger I·R term in the voltage.
+        """
+        span = winding_temp_C - 25.0
+        return self.winding_resistance * (1.0 + self.copper_temp_coeff_per_K * span)
+
+    def effective_resistance_at(self, winding_temp_C: float) -> float:
+        """Same temperature correction on the resistance the actuator is built with."""
+        return (self.effective_resistance * self.resistance_at(winding_temp_C)
+                / self.winding_resistance)
+
+    def envelope(self, voltage: float, joint_speed: float,
+                 resistance: float | None = None) -> float:
         """Steady joint torque, N·m, at a terminal voltage and a joint speed.
 
         This is the straight line the ``<dcmotor>`` element integrates; it is the reference
         the simulated actuator is checked against, not a substitute for it.
         """
+        r = self.effective_resistance if resistance is None else resistance
         ideal = (self.gear_ratio * self.torque_constant
                  * (voltage - self.torque_constant * self.gear_ratio * joint_speed)
-                 / self.effective_resistance)
+                 / r)
         return float(np.clip(ideal, -self.peak_joint_torque, self.peak_joint_torque))
 
-    def voltage_for_torque(self, torque: float, joint_speed: float) -> float:
+    def voltage_for_torque(self, torque: float, joint_speed: float,
+                           resistance: float | None = None) -> float:
         """Terminal voltage that makes the drive deliver *torque* at *joint_speed*, V.
 
         The inverse of :meth:`envelope` along its straight part, ``V = tau * R_eff /
@@ -339,7 +358,8 @@ class ExoMotorConfig:
         returned pair to see what the motor actually delivers; the difference is the
         saturated part of the request.
         """
-        wanted = (torque * self.effective_resistance
+        r = self.effective_resistance if resistance is None else resistance
+        wanted = (torque * r
                   / (self.gear_ratio * self.torque_constant)
                   + self.torque_constant * self.gear_ratio * joint_speed)
         return float(np.clip(wanted, -self.bus_voltage, self.bus_voltage))

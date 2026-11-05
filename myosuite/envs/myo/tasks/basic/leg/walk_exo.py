@@ -517,6 +517,7 @@ class LegWalkExoEnvV0(LegWalkEnvV0):
         if self._winding_temp.shape != hinge_torque.shape:
             self._winding_temp = np.full(hinge_torque.shape, motor.ambient_C)
         cap = np.full(hinge_torque.shape, motor.peak_joint_torque)
+        r_eff = np.full(hinge_torque.shape, motor.effective_resistance)
         if self._exo_thermal:
             cap = np.array([motor.torque_cap(t) for t in self._winding_temp])
             hinge_torque = np.clip(hinge_torque, -cap, cap)
@@ -525,9 +526,14 @@ class LegWalkExoEnvV0(LegWalkEnvV0):
                 [motor.winding_after(t, temp, float(self.model.opt.timestep))
                  for t, temp in zip(hinge_torque, self._winding_temp)]
             )
+            # copper resistance rides on temperature, and the <dcmotor> element keeps the
+            # resistance in gainprm[0], so the hot winding is written back before the step
+            r_eff = np.array([motor.effective_resistance_at(t) for t in self._winding_temp])
+            self.model.actuator_gainprm[self._exo_ctrl_adr, 0] = r_eff
         speed = self.data.qvel[self._exo_motor_dof_adr]
         voltage = np.array(
-            [motor.voltage_for_torque(t, w) for t, w in zip(hinge_torque, speed)]
+            [motor.voltage_for_torque(t, w, resistance=r)
+             for t, w, r in zip(hinge_torque, speed, r_eff)]
         )
         self.set_exo_voltage(voltage)
         reachable = np.array(
