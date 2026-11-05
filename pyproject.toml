@@ -34,9 +34,9 @@ dependencies = [
     "scipy",
     "pandas",
     "osqp",
-    # 3.17 tightens MjsEquality.eq_data to shape (12, 1) and rejects the flat arrays this model
-    # builds, which takes out the whole exo device suite; 3.16 is what the drive was measured on.
-    "mujoco>=3.16,<3.17",
+    # 3.16 is what the drive was measured on; 3.17 is fine too (its eq_data setter wants a
+    # (12, 1) column, and lin1_exo falls back to the flat form when that is rejected).
+    "mujoco>=3.16",
     "Pillow>=10.1.0",
     "colorednoise>=2.2.0",
     "packaging",

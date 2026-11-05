@@ -1300,7 +1300,13 @@ def attach_lin1_exo(
                 eq.objtype = mujoco.mjtObj.mjOBJ_SITE
                 eq.name1 = f"exo_attach_{side}"
                 eq.name2 = f"exo_cuff_site_{side}"
-                eq.data = np.zeros(11)
+                # eq_data is a fixed 12-number block.  MuJoCo 3.17's setter insists on a
+                # (12, 1) column where older bindings took a flat row, so try the column
+                # first and keep the flat form for the versions that reject it.
+                try:
+                    eq.data = np.zeros((12, 1))
+                except (TypeError, ValueError):
+                    eq.data = np.zeros(11)
                 eq.solref = np.asarray(weld_solref, dtype=np.float64)
                 eq.solimp = np.asarray(weld_solimp, dtype=np.float64)
                 weld_names.append(eq.name)

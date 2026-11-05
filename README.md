@@ -68,7 +68,7 @@
 ## 怎么跑
 
 ```bash
-pip install -e .        # 依赖里 mujoco 钉在 3.16：3.17 改紧了 equality 参数形状，会挂掉驱动测试
+pip install -e .        # 依赖里 mujoco >= 3.16（3.16 与 3.17 都跑过全部测试）
 
 # 看被动版行走
 python scripts/view_walk_exo.py
