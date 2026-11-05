@@ -2,42 +2,35 @@
 
 <img src="docs/images/device_front.png" width="420" alt="Lin-I 佩戴在肌骨模型上">
 
-把 **Lin-I 髋关节外骨骼**搬进 MyoSuite 的人体肌骨模型。装置有两个版本：不带电机的**被动版**，
-和每侧髋装一台 **RobStride RS02** 电机的**驱动版**。
+把 **Lin-I 髋关节外骨骼**搬进 MyoSuite 的人体肌骨模型，每侧髋挂一台 **RobStride RS02** 电机。
 
-驱动版的重点是电气：电机不是"直接给一个力矩"，而是给**电压**，由反电动势、绕组电阻和驱动器
-限流算出力矩——这样仿真里的力矩输出才有真机的脾性。
+这件事的主线是**力矩输出像不像真机**：电机在仿真里不是"直接给一个力矩"，而是给**电压**，由反电动势、
+绕组电阻和驱动器限流算出力矩。下面三张图就讲这一件事。
 
-下面四张图按"帮不帮得上"的顺序讲完这件事。
+## 一、力矩曲线：命令多少，就交出多少
 
-## 一、机器怎么帮
+<img src="docs/images/tor_curve.png" width="760" alt="一个步态周期的力矩、电流、电压">
 
-<img src="docs/images/fig1_when.png" width="760" alt="一个步态周期里的力矩与髋角速度">
+一个步态周期（1 秒）里：
 
-每走一步，机器推一下：**峰值 12 N·m，持续约四分之一秒**。上图是髋关节的角速度（为正表示腿在往前摆），
-下图是机器实际输出的力矩。命令和实际输出最多只差 0.56 N·m。
+- **上面**：实线是电机实际输出的力矩，虚线是命令，两者最大只差 **0.56 N·m**；左右腿各推一次，峰值 12 N·m。
+- **中间**：对应的电流，峰值 **10.9 A**，是驱动器上限 16 A 的 **67%**。
+- **下面**：端电压，峰值 **26.6 V**，只用了 48 V 电源的一半。
 
-## 二、12 N·m 是什么概念
+## 二、能出多大，到哪为止
 
-<img src="docs/images/fig2_how_much.png" width="700" alt="12 N·m 与电机能力的关系">
+<img src="docs/images/tor_envelope.png" width="700" alt="力矩-转速能力线">
 
-电机峰值能出 17 N·m，但只能撑很短时间；能一直出的只有 6 N·m。**我们的处方 12 N·m 是峰值的七成，
-却是连续上限的两倍**——短时走没问题，长时间走会发热。
+转速越快，能给的力矩越小。**17 N·m 这条平线不是电机极限，是驱动器限流**——不放电流限制的话，
+静止时它能出 37.7 N·m。我们的运行点都挤在左下角（0–100 转/分、10 N·m 上下），离"高速出不了力"
+那一端还很远，所以真正限制我们的是电流，不是转速。
 
-## 三、电机出的力，腿上能感觉到多少
+## 三、12 N·m 处在什么位置
 
-<img src="docs/images/fig3_transfer.png" width="620" alt="两种固定方式的力矩传递">
+<img src="docs/images/tor_rating.png" width="700" alt="12 N·m 与电机峰值、连续上限的关系">
 
-电机在髋关节出 1 N·m，人腿实际感到的力矩：原来的点焊固定只有 **0.12**，换成夹紧式绑带（台架实测）是
-**1.0**。这就是为什么早先加大力矩没有用——力都耗在绑带打滑上了。
-
-## 四、为什么"什么时候推"比"推多大力"重要
-
-<img src="docs/images/fig4_phase.png" width="680" alt="三种做法的行走成功率">
-
-12 个不同的起步状态，看能走满 15 秒的有几个。用训练时的时机推，只有 **3 个**能走；把推力提前
-0.05 个步态周期，变成 **10 个**——策略一个字没改。反过来，在提前后的时机上再训练 15 万步，
-掉到 **6 个**。所以缺的不是训练，是时机。
+电机峰值 17 N·m 只能短时用，能一直出的只有 6 N·m。**处方 12 N·m 是峰值的七成，却是连续上限的两倍**：
+短时走没问题，长走会发热。
 
 ## 并排看
 
@@ -53,6 +46,9 @@
 - 力矩常数和绕组电阻都是从厂家曲线拟合的，再用第二个电压点交叉验证（两条路径 99.2% 一致）。
 - 所以 17 N·m 这个峰值不是写死的：仿真跑到 17 N·m 时电流正好是驱动器上限的 93%，是限流造出来的。
 - 每一步都记录电压、电流、是否饱和、实际输出力矩，任何一条处方都能拿去和真机边界对账。
+
+另外，把这段推力**提前 0.05 个步态周期**，12 个受扰起步状态里能走满 15 秒的从 3 个变成 10 个
+——时机比幅值重要，这部分数据在 `scripts/frozen_ab_walk_exo.py` 里可以复现。
 
 ## 怎么跑
 
@@ -89,8 +85,9 @@ scripts/                                        查看、验收、A/B、训练�
 
 ---
 
-<sub>English: a CAD-accurate Lin-I hip exoskeleton in MyoSuite, passive and with one RobStride RS02 per hip
-behind MuJoCo's native DC-motor model, so torque comes out of a voltage command and the driver's current
-limit rather than a constant. The 12 N·m prescription is two thirds of the peak and twice the continuous
-rating; moving its timing by 0.05 of a gait cycle takes the same frozen policy from 3/12 to 10/12
-perturbed initial states, while more torque buys nothing because the strap, not the motor, is the ceiling.</sub>
+<sub>English: a CAD-accurate Lin-I hip exoskeleton in MyoSuite with one RobStride RS02 per hip behind
+MuJoCo's native DC-motor model, so torque comes out of a voltage command and the driver's current limit
+rather than a constant: the delivered hinge torque tracks the command to within 0.56 N·m, drawing 67% of
+the driver's current and 55% of the 48 V bus. The 17 N·m plateau is the current limit, not the motor —
+an unrestricted stall would reach 37.7 N·m — and a 12 N·m prescription is seven tenths of that peak but
+twice the module's continuous rating.</sub>
