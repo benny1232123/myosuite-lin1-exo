@@ -6,56 +6,55 @@
 和每侧髋装一台 **RobStride RS02** 电机的**驱动版**。
 
 驱动版的重点是电气：电机不是"直接给一个力矩"，而是给**电压**，由反电动势、绕组电阻和驱动器
-23 A 限流算出力矩——这样仿真里的力矩输出才有真机的脾性。
+限流算出力矩——这样仿真里的力矩输出才有真机的脾性。
 
-## 一、驱动到底输出了什么
+下面四张图按"帮不帮得上"的顺序讲完这件事。
 
-一个步态周期里，两条腿被交付的力矩（虚线是命令，实线是实际交付，两条几乎重合）：
+## 一、机器怎么帮
 
-<img src="docs/images/fig_gait_drive_zh.png" width="760" alt="一个步态周期里的力矩、电流、电压">
+<img src="docs/images/fig1_when.png" width="760" alt="一个步态周期里的力矩与髋角速度">
 
-- 左右髋差半个周期，峰值 ±12 N·m，命令和交付最大只差 **0.56 N·m**；
-- 峰值相电流 **10.9 Arms**，是驱动器 23 Apk（≈16.3 Arms）的 67%；
-- 峰值端电压 **26.6 V**，48 V 母线的一半。
+每走一步，机器推一下：**峰值 12 N·m，持续约四分之一秒**。上图是髋关节的角速度（为正表示腿在往前摆），
+下图是机器实际输出的力矩。命令和实际输出最多只差 0.56 N·m。
 
-力矩-转速平面看得更清楚：运行点都在限流线以下、离 48 V 电气包络还有一半余量。
+## 二、12 N·m 是什么概念
 
-<img src="docs/images/fig_tn_zh.png" width="620" alt="力矩-转速平面与运行点">
+<img src="docs/images/fig2_how_much.png" width="700" alt="12 N·m 与电机能力的关系">
 
-## 二、三个结论
+电机峰值能出 17 N·m，但只能撑很短时间；能一直出的只有 6 N·m。**我们的处方 12 N·m 是峰值的七成，
+却是连续上限的两倍**——短时走没问题，长时间走会发热。
 
-**1. 辅助要在对的时刻给。** 同样是 12 N·m，脉冲落点提前 0.25 个步态周期，能走满 15 秒的初态就从
-3/12 变成 10/12，而策略一个字都没改。专门在那个时刻再训 15 万步，反而掉回 6/12——缺的不是训练。
+## 三、电机出的力，腿上能感觉到多少
 
-<img src="docs/images/fig_phase_lead_zh.png" width="600" alt="相位超前与存活数">
+<img src="docs/images/fig3_transfer.png" width="620" alt="两种固定方式的力矩传递">
 
-**2. 力矩再大也不会更好。** 0 → 17 N·m 扫下来，走得最好的反而是 0 N·m。瓶颈不在电机而在绑带：
-夹紧式袖带能把约 1.0 的力矩传到髋，原来的点焊只有 0.12，电机给的力矩大部分没进到人身上。
+电机在髋关节出 1 N·m，人腿实际感到的力矩：原来的点焊固定只有 **0.12**，换成夹紧式绑带（台架实测）是
+**1.0**。这就是为什么早先加大力矩没有用——力都耗在绑带打滑上了。
 
-<img src="docs/images/fig_torque_ceiling_zh.png" width="580" alt="指令力矩与存活数">
+## 四、为什么"什么时候推"比"推多大力"重要
 
-**3. 12 N·m 只用掉电机三分之二的能力。** 峰值电流、关节 RMS 力矩、峰值母线电压分别是三条边界的
-67% / 67% / 55%。换成 17 N·m 就到了 93% / 95%，只能短时用。
+<img src="docs/images/fig4_phase.png" width="680" alt="三种做法的行走成功率">
 
-<img src="docs/images/fig_rs02_envelope_zh.png" width="100%" alt="处方与 RS02 电气、热、电压边界">
+12 个不同的起步状态，看能走满 15 秒的有几个。用训练时的时机推，只有 **3 个**能走；把推力提前
+0.05 个步态周期，变成 **10 个**——策略一个字没改。反过来，在提前后的时机上再训练 15 万步，
+掉到 **6 个**。所以缺的不是训练，是时机。
 
-## 三、并排看
+## 并排看
 
-左边不带电机，右边 12 N·m 辅助（lead 0.05）。同一机位、同一条时间轴，只有驱动不同：
+左边不带电机，右边 12 N·m 辅助。同一机位、同一条时间轴：
 
 <img src="docs/videos/walk_compare_loop.gif" width="760" alt="被动与驱动并排">
 
 完整 15 秒（左右并排）：[docs/videos/walk_compare_15s.mp4](docs/videos/walk_compare_15s.mp4)
 
-## 四、电气模型怎么做的
+## 电气模型是怎么做的
 
 - 用 MuJoCo 原生 `<dcmotor>`：反电动势、绕组电阻、力矩常数、电流限幅、转子惯量折合到关节。
-- 力矩常数 K 和绕组电阻 R 都是**从说明书曲线拟合**的，并用第二个电压点交叉验证（两条路径 99.2% 一致）。
-- 所以 17 N·m 这个"峰值"不是写死的常数：仿真跑到 17 N·m 时峰值电流 21.5 A，正好是 23 A 的 93%，
-  是限流造出来的。
+- 力矩常数和绕组电阻都是从厂家曲线拟合的，再用第二个电压点交叉验证（两条路径 99.2% 一致）。
+- 所以 17 N·m 这个峰值不是写死的：仿真跑到 17 N·m 时电流正好是驱动器上限的 93%，是限流造出来的。
 - 每一步都记录电压、电流、是否饱和、实际输出力矩，任何一条处方都能拿去和真机边界对账。
 
-## 五、怎么跑
+## 怎么跑
 
 ```bash
 pip install -e .
@@ -63,7 +62,7 @@ pip install -e .
 # 看被动版行走
 python scripts/view_walk_exo.py
 
-# 带电机、12 N·m @ lead 0.05 的验收
+# 带电机、12 N·m 辅助的验收
 python scripts/eval_walk_exo.py --policy finetuned_cal070_a12.zip \
        --assist-torque 12 --assist-phase-lead 0.05 --strap-preload 50 \
        --muscle-force-scale 0.70 --steps 1500
@@ -73,7 +72,7 @@ python scripts/frozen_ab_walk_exo.py --policy finetuned_cal070_a12.zip \
        --assist-torque 0 12 --assist-phase-lead 0.05 --seeds 0 1 2 3 4 5
 ```
 
-## 六、目录
+## 目录
 
 ```
 myosuite/envs/myo/tasks/basic/leg/lin1_exo.py   装置几何 + 电机
@@ -82,7 +81,7 @@ myosuite/tests/                                 266 项测试
 scripts/                                        查看、验收、A/B、训练、出视频
 ```
 
-## 七、还没做的
+## 还没做的
 
 - **发热没建模**。上面说的"连续 6 N·m"是额定值；走久了会不会过热，仿真里看不到。
 - 空载摩擦（关节上约 0.6 N·m）和电感没有建模。
@@ -91,7 +90,7 @@ scripts/                                        查看、验收、A/B、训练�
 ---
 
 <sub>English: a CAD-accurate Lin-I hip exoskeleton in MyoSuite, passive and with one RobStride RS02 per hip
-behind MuJoCo's native DC-motor model, so torque comes out of a voltage command and a 23 A limit rather
-than a constant — the simulated 17 N·m peak draws 21.5 A, 93% of the driver's limit. Moving the assist
-pulse from the training default to lead 0.05 takes the same frozen policy from 3/12 to 10/12 perturbed
-initial states, while more torque buys nothing because the cuff, not the motor, is the ceiling.</sub>
+behind MuJoCo's native DC-motor model, so torque comes out of a voltage command and the driver's current
+limit rather than a constant. The 12 N·m prescription is two thirds of the peak and twice the continuous
+rating; moving its timing by 0.05 of a gait cycle takes the same frozen policy from 3/12 to 10/12
+perturbed initial states, while more torque buys nothing because the strap, not the motor, is the ceiling.</sub>
