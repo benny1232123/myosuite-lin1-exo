@@ -907,6 +907,7 @@ def attach_lin1_exo(
     weld: bool = True,
     damping: float = 0.05,
     armature: float = 0.0,
+    drive_friction: float = 0.0,
     motor: ExoMotorConfig | None = None,
     flexion_range: tuple[float, float] = (-1.6, 1.6),
     roll_range: tuple[float, float] = (-1.2, 1.2),
@@ -1229,7 +1230,9 @@ def attach_lin1_exo(
                 limited=True,
                 damping=float(damping),
                 armature=float(armature),
-                frictionloss=0.0,
+                # the module's own no-load drag (~0.5 Arms of friction current).  Off by
+                # default because the published policies were trained without it.
+                frictionloss=float(drive_friction),
             )
             # the long link hangs off the crank's pin: a real clevis hinge which the thigh
             # strap drags around, so it turns as the leg swings.  The spring only picks the

@@ -484,6 +484,11 @@ def main() -> int:
                              "side's own extension peak")
     parser.add_argument("--assist-width", type=float, default=0.30,
                         help="full width of the assist pulse, as a fraction of a gait cycle")
+    parser.add_argument("--drive-friction", type=float, default=0.0,
+                        help="no-load drag of the hip module, N.m at the joint (0 = the "
+                             "model the published policies were trained against)")
+    parser.add_argument("--thermal-derate", action="store_true",
+                        help="let the winding heat up and derate the drive over long runs")
     parser.add_argument("--strap-preload", type=float, default=0.0,
                         help="clamp the cuff to the thigh with a preloaded friction band, N of "
                              "normal force per pad (0 keeps the passive point-connected cuff "
@@ -506,6 +511,10 @@ def main() -> int:
             "exo_assist_phase_lead": args.assist_phase_lead,
             "exo_assist_width": args.assist_width,
         }
+    if args.drive_friction:
+        env_kwargs["exo_drive_friction_Nm"] = float(args.drive_friction)
+    if args.thermal_derate:
+        env_kwargs["exo_thermal_derate"] = True
     if args.strap_preload:
         # the band is a property of the wearing interface, not of the drive: it has to be
         # buildable with no motor at all, which is the regression case for the passive gait

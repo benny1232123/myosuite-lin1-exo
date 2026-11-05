@@ -516,3 +516,13 @@ def test_a_hot_winding_needs_more_voltage_for_the_same_torque() -> None:
     env.step(np.zeros(env.action_space.shape, dtype=np.float32))
     assert np.all(env.model.actuator_gainprm[env._exo_ctrl_adr, 0]
                   > motor.effective_resistance * 1.2)
+
+
+def test_the_drive_friction_knob_lands_on_the_driven_hinge() -> None:
+    env = make_env(EXO_ENV, exo_drive_friction_Nm=0.56).unwrapped
+    for side in SIDES:
+        adr = env.model.jnt_dofadr[env.model.joint(f"exo_hip_flexion_{side}").id]
+        assert env.model.dof_frictionloss[adr] == pytest.approx(0.56)
+    base = make_env(EXO_ENV).unwrapped
+    adr = base.model.jnt_dofadr[base.model.joint("exo_hip_flexion_r").id]
+    assert base.model.dof_frictionloss[adr] == 0.0
