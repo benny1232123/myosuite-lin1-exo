@@ -32,8 +32,9 @@ import torch  # noqa: E402
 import gymnasium as gym  # noqa: E402
 
 import myosuite  # noqa: F401,E402
-from myosuite import make_env  # noqa: E402
 from myosuite.utils.checkpoint_utils import find_checkpoint  # noqa: E402
+
+from eval_walk_exo import make_scaled_env  # noqa: E402
 
 from stable_baselines3 import PPO  # noqa: E402
 from stable_baselines3.common.callbacks import BaseCallback, CallbackList, CheckpointCallback  # noqa: E402
@@ -93,9 +94,12 @@ class AcceptanceCallback(BaseCallback):
     """
 
     def __init__(self, env_id: str, obs_mean, obs_var, every: int = 50_000,
-                 steps: int = 1500, seed: int = 0, verbose: int = 0):
+                 steps: int = 1500, seed: int = 0, verbose: int = 0,
+                 env_kwargs: dict | None = None, force_scale: float = 1.0):
         super().__init__(verbose)
-        self.env = make_env(env_id).unwrapped
+        self.env = make_scaled_env(env_id, force_scale, **(env_kwargs or {})).unwrapped
+        self.env_kwargs = dict(env_kwargs or {})
+        self.force_scale = float(force_scale)
         self.every = every
         self.steps = steps
         self.seed = seed
@@ -181,7 +185,59 @@ def main() -> int:
                     help="run a 1500-step acceptance check every N steps (0 disables)")
     ap.add_argument("--tb-log", default="tb_logs",
                     help="TensorBoard log directory (SB3 writes episode reward/length here)")
+    ap.add_argument("--strap-preload", type=float, default=0.0,
+                    help="clamp the cuff to the thigh with a preloaded friction band at this "
+                         "normal force per pad, N (0 keeps the point-connected cuff).  Both "
+                         "the training envs and the acceptance check use the same build.")
+    ap.add_argument("--exo-motor", action="store_true",
+                    help="fit the hip drive (dcmotor, back-EMF, rotor inertia) to the model.  "
+                         "Train with it when the comparison will run with it: even at zero "
+                         "commanded torque it leaves a few tenths of a N.m and the reflected "
+                         "inertia on the hinge, which is enough to change the gait.")
+    ap.add_argument("--assist-torque", type=float, default=None,
+                    help="run the phase-locked assist controller during training at this peak "
+                         "hip torque, N.m (negative extends).  Without it the policy learns to "
+                         "walk around the drive instead of with it.")
+    ap.add_argument("--assist-phase-lead", type=float, default=0.30,
+                    help="fraction of the gait cycle the pulse is moved earlier than the "
+                         "side's extension peak (best measured value on the clamped build)")
+    ap.add_argument("--assist-width", type=float, default=0.30,
+                    help="full width of the assist pulse as a fraction of a gait cycle")
+    ap.add_argument("--muscle-force-scale", type=float, default=1.0,
+                    help="train against a wearer whose muscles are this fraction of the "
+                         "published max isometric force (MyoSuite's sarcopenia knob on "
+                         "gainprm[:,2]).  The exo's actuator rows are zero in that column, so "
+                         "the drive keeps its fitted parameters.  1.0 = registered model.")
+    ap.add_argument("--effort-weight", type=float, default=0.0,
+                    help="weight on the env's act_mag term. The published objective scores no "
+                         "effort at all, so a policy trained under it has no reason to keep "
+                         "any saving the exoskeleton gives it. act_mag is ||act||/na, whose "
+                         "mean along a good gait is ~0.06 against a dense reward of ~17, so "
+                         "-25 costs about 9%% of the reward and anything above ~-5 does "
+                         "nothing (0 = the published objective)")
     args = ap.parse_args()
+
+    env_kwargs = {} if args.strap_preload <= 0 else {
+        "exo_strap_preload_N": float(args.strap_preload)}
+    if args.exo_motor:
+        env_kwargs["exo_motor"] = True
+    if args.assist_torque is not None:
+        if not args.exo_motor:
+            raise SystemExit("--assist-torque needs --exo-motor: the pulse is delivered "
+                             "through the drive")
+        env_kwargs.update({
+            "exo_assist_torque": float(args.assist_torque),
+            "exo_assist_phase_lead": float(args.assist_phase_lead),
+            "exo_assist_width": float(args.assist_width),
+        })
+    if args.effort_weight:
+        # read the weights off the env instead of copying DEFAULT_RWD_KEYS_AND_WEIGHTS, so the
+        # objective changes by the one term asked for and nothing else
+        base = dict(make_scaled_env(args.env, args.muscle_force_scale,
+                                    **env_kwargs).unwrapped.rwd_keys_wt)
+        base["act_mag"] = float(args.effort_weight)
+        env_kwargs["weighted_reward_keys"] = base
+    print(f"env build: {args.env} {env_kwargs or '(defaults)'}")
 
     print(f"torch {torch.__version__}  cuda={torch.cuda.is_available()} "
           f"{torch.cuda.get_device_name(0) if torch.cuda.is_available() else ''}")
@@ -196,7 +252,7 @@ def main() -> int:
         def _f():
             from stable_baselines3.common.monitor import Monitor
 
-            e = make_env(args.env, seed=seed)
+            e = make_scaled_env(args.env, args.muscle_force_scale, seed=seed, **env_kwargs)
             # TimeLimit ends the episode so Monitor records a finished episode; Monitor
             # records its return/length for TensorBoard
             e = gym.wrappers.TimeLimit(e, max_episode_steps=1500)
@@ -231,7 +287,10 @@ def main() -> int:
         with torch.no_grad():
             s = policy.policy.log_std.exp()
         print(f"resumed from {args.resume}  "
-              f"(std mean {s.mean():.4f}, min {s.min():.4f}, max {s.max():.4f})")
+              f"(std mean {s.mean():.4f}, min {s.min():.4f}, max {s.max():.4f})  "
+              f"lr={args.lr:.2e} target_kl={policy.target_kl} "
+              f"(loaded optimizer lr was {policy.policy.optimizer.param_groups[0]['lr']:.2e}; "
+              f"PPO.update() re-applies --lr every update)")
 
     t0 = time.time()
     # checkpoint every 50k steps so a harness/server restart cannot throw away a whole
@@ -241,7 +300,8 @@ def main() -> int:
     callbacks = [ckpt_cb]
     if args.eval_every > 0:
         callbacks.append(AcceptanceCallback(args.env, obs_mean, obs_var,
-                                            every=args.eval_every))
+                                            every=args.eval_every, env_kwargs=env_kwargs,
+                                            force_scale=args.muscle_force_scale))
     policy.learn(total_timesteps=args.steps, callback=CallbackList(callbacks),
                  progress_bar=False, log_interval=10)
     wall = time.time() - t0
@@ -250,8 +310,15 @@ def main() -> int:
 
     policy.save(args.out)
     with open(f"{args.out}_info.json", "w", encoding="utf-8") as f:
+        # the run's own objective and body, recorded rather than reconstructed: the -25 effort
+        # weight was unverifiable from the artefacts and cost a full re-training cycle to
+        # rule out as a wiring bug
         json.dump({"baseline": info["checkpoint"], "steps": args.steps,
                    "wall_s": wall, "env": args.env,
+                   "env_kwargs": {k: v for k, v in env_kwargs.items() if k != "exo_motor"}
+                   | ({"exo_motor": True} if "exo_motor" in env_kwargs else {}),
+                   "lr": args.lr, "target_kl": args.target_kl,
+                   "muscle_force_scale": args.muscle_force_scale,
                    "obs_normalizer": "rsl_rl EmpiricalNormalization (std + 1e-2)",
                    "obs_mean": obs_mean.tolist(), "obs_var": obs_var.tolist()}, f, indent=2)
     print(f"saved {args.out}.zip")

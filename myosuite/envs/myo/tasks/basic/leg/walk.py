@@ -155,17 +155,23 @@ class LegWalkEnvV0(CtrlStageHost, MyoGymnasiumEnv, EzPickle):
         )
         obs = self._obs_dict_to_vec(self._get_obs_dict(self._accessor))
         self.observation_space = self._unbounded_obs_space(obs.size)
-        act_low = (
-            np.zeros(self.model.nu, dtype=np.float32)
-            if normalize_act
-            else self.model.actuator_ctrlrange[:, 0].astype(np.float32)
-        )
-        act_high = (
-            np.ones(self.model.nu, dtype=np.float32)
-            if normalize_act
-            else self.model.actuator_ctrlrange[:, 1].astype(np.float32)
-        )
-        self.action_space = gym.spaces.Box(act_low, act_high, dtype=np.float32)
+        self.action_space = self._muscle_action_space(self.model.nu)
+
+    def _muscle_action_space(self, n_ctrl: int) -> gym.spaces.Box:
+        """Action space covering the first ``n_ctrl`` ctrl slots.
+
+        An env that owns extra, self-commanded actuators (an exoskeleton drive, say)
+        narrows the policy action to the muscle slots it actually emits; the slots
+        beyond ``n_ctrl`` are left alone by :meth:`_apply_action`.
+        """
+        if self.normalize_act:
+            act_low = np.zeros(n_ctrl, dtype=np.float32)
+            act_high = np.ones(n_ctrl, dtype=np.float32)
+        else:
+            cr = self.model.actuator_ctrlrange[:n_ctrl]
+            act_low = cr[:, 0].astype(np.float32)
+            act_high = cr[:, 1].astype(np.float32)
+        return gym.spaces.Box(act_low, act_high, dtype=np.float32)
 
     def _apply_action(self, action: np.ndarray) -> None:
         ctrl = np.clip(action, self.action_space.low, self.action_space.high).astype(
@@ -175,10 +181,10 @@ class LegWalkEnvV0(CtrlStageHost, MyoGymnasiumEnv, EzPickle):
             # Actions are already in [0, 1]; use as muscle activations (no sigmoid).
             pass
         elif self.normalize_act and self.model.nu > 0:
-            cr = self.model.actuator_ctrlrange
+            cr = self.model.actuator_ctrlrange[: ctrl.shape[0]]
             ctrl = cr[:, 0] + ctrl * (cr[:, 1] - cr[:, 0])
         ctrl = self._run_ctrl_stages(ctrl)
-        self.data.ctrl[:] = ctrl
+        self.data.ctrl[: ctrl.shape[0]] = ctrl
 
     def _get_com(self) -> np.ndarray:
         mass = np.expand_dims(self.model.body_mass, -1)

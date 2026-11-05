@@ -69,6 +69,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+from dataclasses import dataclass
 from typing import Any
 
 import mujoco
@@ -77,6 +78,7 @@ import numpy as np
 __all__ = [
     "EXO_PARAMS_PATH",
     "SIDES",
+    "ExoMotorConfig",
     "attach_lin1_exo",
     "load_exo_params",
 ]
@@ -165,6 +167,149 @@ def load_exo_params(path: str | pathlib.Path | None = None) -> dict[str, Any]:
     """Return the CAD-derived exoskeleton parameters."""
     with open(path or EXO_PARAMS_PATH, encoding="utf-8") as handle:
         return json.load(handle)
+
+
+# --------------------------------------------------------------------------------------
+# actuator: what the hip motor can actually deliver
+# --------------------------------------------------------------------------------------
+@dataclass(frozen=True)
+class ExoMotorConfig:
+    """One hip module's drive chain, as MuJoCo's native ``<dcmotor>`` element reads it.
+
+    The element is terminal-controlled (``ctrl`` is the applied voltage in V) and owns the
+    electromechanical relation ``tau = gear * K * (V - K * gear * omega) / R``, so the
+    torque-speed envelope, the current cap and the reflected rotor inertia come from the
+    physics rather than from a clip placed on top of an ideal torque source.
+
+    Two conversions are needed to state the model in joint-side, datasheet-shaped terms:
+
+    * transmission loss.  ``<dcmotor>`` has no efficiency parameter and uses one constant
+      ``K`` for torque production and back-EMF alike, so the gear efficiency is folded into
+      the winding resistance (``R / efficiency``).  That reproduces the stalled torque
+      ``eta * gear * K * V / R`` and leaves the ideal no-load speed ``V / (gear * K)``
+      untouched; the trade-off is that the loss is dissipated in the winding, so the
+      winding current over-reports and the gear under-reports.  Acceptable while the model
+      stops at the envelope; a thermal claim needs the loss moved to its own heat path.
+    * the torque cap.  ``saturation`` is a *rotor-side* limit (it becomes the actuator force
+      range before the gear multiplies), so the joint-level peak is passed as
+      ``peak_joint_torque / gear_ratio``.
+
+    Attributes:
+        bus_voltage: Terminal voltage ceiling (V); sets the ``ctrlrange``.
+        gear_ratio: Output turns per motor turn.
+        gear_efficiency: Mechanical efficiency of the gear train, in ``(0, 1]``.
+        torque_constant: Motor constant K, in N·m/A and equivalently V·s/rad.
+        winding_resistance: Armature resistance R, in ohm.
+        rotor_inertia: Rotor inertia at the motor shaft, kg·m²; MuJoCo reflects it onto the
+            joint as ``gear_ratio**2 * rotor_inertia``, so it must not be doubled up.
+        peak_joint_torque: Short-time torque the joint can deliver, N·m.
+        continuous_joint_torque: Sustained torque, N·m.  Recorded only: derating between the
+            two is the thermal model, which is off until the bench data exists.
+        inductance: Armature inductance, H, or ``None`` for an algebraic current.  With no
+            inductance the electrical pole disappears and the current settles within one
+            physics step, which is the right limit at millisecond control periods.
+        cogging_torque: Rotor cogging torque amplitude, N·m at the rotor.
+        calibrated: Whether the numbers above came from the device rather than a placeholder.
+    """
+
+    bus_voltage: float
+    gear_ratio: float
+    gear_efficiency: float
+    torque_constant: float
+    winding_resistance: float
+    rotor_inertia: float
+    peak_joint_torque: float
+    continuous_joint_torque: float
+    inductance: float | None = None
+    cogging_torque: float = 0.0
+    calibrated: bool = False
+
+    @classmethod
+    def from_params(cls, params: dict[str, Any]) -> "ExoMotorConfig":
+        """Build the config from the ``actuator`` block of the exoskeleton parameter file."""
+        block = params["actuator"]
+        return cls(
+            bus_voltage=float(block["bus_voltage_V"]),
+            gear_ratio=float(block["gear_ratio"]),
+            gear_efficiency=float(block["gear_efficiency"]),
+            torque_constant=float(block["torque_constant_Nm_A"]),
+            winding_resistance=float(block["winding_resistance_ohm"]),
+            rotor_inertia=float(block["rotor_inertia_kg_m2"]),
+            peak_joint_torque=float(block["peak_joint_torque_Nm"]),
+            continuous_joint_torque=float(block["continuous_joint_torque_Nm"]),
+            inductance=(None if block.get("inductance_H") is None
+                        else float(block["inductance_H"])),
+            cogging_torque=float(block.get("cogging_torque_Nm", 0.0)),
+            calibrated=not bool(block.get("uncalibrated", True)),
+        )
+
+    def __post_init__(self) -> None:
+        if self.gear_ratio <= 0.0:
+            raise ValueError("gear_ratio must be positive")
+        if not 0.0 < self.gear_efficiency <= 1.0:
+            raise ValueError("gear_efficiency must be in (0, 1]")
+        if self.torque_constant <= 0.0 or self.winding_resistance <= 0.0:
+            raise ValueError("torque_constant and winding_resistance must be positive")
+        if self.peak_joint_torque <= 0.0:
+            raise ValueError("peak_joint_torque must be positive")
+        if self.continuous_joint_torque > self.peak_joint_torque:
+            raise ValueError("continuous_joint_torque cannot exceed peak_joint_torque")
+
+    @property
+    def effective_resistance(self) -> float:
+        """Winding resistance carrying the gear loss: ``R / efficiency``."""
+        return self.winding_resistance / self.gear_efficiency
+
+    @property
+    def rotor_torque_limit(self) -> float:
+        """Value for ``saturation[0]``: the joint peak referred to the motor shaft."""
+        return self.peak_joint_torque / self.gear_ratio
+
+    @property
+    def peak_current(self) -> float:
+        """Motor current at the torque cap, A."""
+        return self.rotor_torque_limit / self.torque_constant
+
+    @property
+    def stall_current(self) -> float:
+        """Current the unclamped electrical equation would draw at zero speed, A."""
+        return self.bus_voltage / self.effective_resistance
+
+    @property
+    def no_load_joint_speed(self) -> float:
+        """Joint speed at which the delivered torque falls to zero, rad/s."""
+        return self.bus_voltage / (self.torque_constant * self.gear_ratio)
+
+    @property
+    def torque_slope(self) -> float:
+        """Envelope slope, N·m per rad/s of joint speed (negative)."""
+        return -(self.gear_ratio ** 2) * self.torque_constant ** 2 / self.effective_resistance
+
+    def envelope(self, voltage: float, joint_speed: float) -> float:
+        """Steady joint torque, N·m, at a terminal voltage and a joint speed.
+
+        This is the straight line the ``<dcmotor>`` element integrates; it is the reference
+        the simulated actuator is checked against, not a substitute for it.
+        """
+        ideal = (self.gear_ratio * self.torque_constant
+                 * (voltage - self.torque_constant * self.gear_ratio * joint_speed)
+                 / self.effective_resistance)
+        return float(np.clip(ideal, -self.peak_joint_torque, self.peak_joint_torque))
+
+    def voltage_for_torque(self, torque: float, joint_speed: float) -> float:
+        """Terminal voltage that makes the drive deliver *torque* at *joint_speed*, V.
+
+        The inverse of :meth:`envelope` along its straight part, ``V = tau * R_eff /
+        (gear * K) + K * gear * omega``, then clipped to the bus -- ``ctrlrange`` *is* the
+        bus voltage, so a request the motor cannot hold comes back as the rail voltage
+        rather than as an impossible number.  Read back through :meth:`envelope` at the
+        returned pair to see what the motor actually delivers; the difference is the
+        saturated part of the request.
+        """
+        wanted = (torque * self.effective_resistance
+                  / (self.gear_ratio * self.torque_constant)
+                  + self.torque_constant * self.gear_ratio * joint_speed)
+        return float(np.clip(wanted, -self.bus_voltage, self.bus_voltage))
 
 
 # --------------------------------------------------------------------------------------
@@ -380,6 +525,327 @@ def _group_visual(
 # --------------------------------------------------------------------------------------
 # attachment
 # --------------------------------------------------------------------------------------
+def _add_hip_drive(
+    spec: mujoco.MjSpec,
+    side: str,
+    joint_name: str,
+    motor: ExoMotorConfig,
+    strap_site: str | None = None,
+) -> tuple[str, list[str]]:
+    """Power one exo hip hinge with MuJoCo's native DC-motor chain and instrument it.
+
+    ``strap_site`` is the cuff site the weld pulls on; when it is given, force and torque
+    sensors are hung off that frame.  Note what they can and cannot see: the cuff is joined to
+    the femur by a point-connect equality, which is not part of the tree these sensors
+    integrate over, so they report the cuff's own residual wrench (~0.04 N.m whether or not
+    the drive is pushing) and not the assistance reaching the leg - that is
+    :func:`hip_torque_transfer`, measured off the hip dof's constraint force for whichever
+    interface the model built.
+
+    Returns ``(actuator_name, sensor_names)``.
+    """
+    actuator = spec.add_actuator(
+        name=f"exo_motor_{side}",
+        type=mujoco.mjtActuator.mjACTUATOR_DCMOTOR,
+        trntype=mujoco.mjtTrn.mjTRN_JOINT,
+        target=joint_name,
+        gear=np.asarray([motor.gear_ratio, 0, 0, 0, 0, 0], dtype=np.float64),
+        armature=float(motor.rotor_inertia),
+    )
+    actuator.set_to_dcmotor(
+        motorconst=[float(motor.torque_constant)] * 2,
+        resistance=float(motor.effective_resistance),
+        saturation=[float(motor.rotor_torque_limit), 0.0, 0.0],
+        inductance=[float(motor.inductance or 0.0), 0.0],
+        cogging=[float(motor.cogging_torque), 0.0, 0.0],
+        ctrlspec=int(mujoco.mjtCtrlInput.mjINPUT_VOLTAGE),
+    )
+    actuator.ctrlrange = [-float(motor.bus_voltage), float(motor.bus_voltage)]
+    actuator.ctrllimited = True
+
+    sensors = [
+        spec.add_sensor(
+            name=f"exo_motor_torque_{side}",
+            type=mujoco.mjtSensor.mjSENS_ACTUATORFRC,
+            objtype=mujoco.mjtObj.mjOBJ_ACTUATOR,
+            objname=f"exo_motor_{side}",
+        ).name,
+        spec.add_sensor(
+            name=f"exo_hip_speed_{side}",
+            type=mujoco.mjtSensor.mjSENS_JOINTVEL,
+            objtype=mujoco.mjtObj.mjOBJ_JOINT,
+            objname=joint_name,
+        ).name,
+    ]
+    if strap_site is not None:
+        # The cuff frame is instrumented as an interface to check the assembly against - both
+        # halves of the wrench, moment and force, at the same point.
+        sensors.append(
+            spec.add_sensor(
+                name=f"exo_strap_torque_{side}",
+                type=mujoco.mjtSensor.mjSENS_TORQUE,
+                objtype=mujoco.mjtObj.mjOBJ_SITE,
+                objname=strap_site,
+            ).name
+        )
+        sensors.append(
+            spec.add_sensor(
+                name=f"exo_strap_force_{side}",
+                type=mujoco.mjtSensor.mjSENS_FORCE,
+                objtype=mujoco.mjtObj.mjOBJ_SITE,
+                objname=strap_site,
+            ).name
+        )
+    return actuator.name, sensors
+
+
+# --------------------------------------------------------------------------------------
+# wearing interface: the preload that makes the cuff carry a moment
+# --------------------------------------------------------------------------------------
+_STRAP_BIT = 1 << 12
+"""Collision bit shared by the strap pads and the thigh band, and by nothing else.
+
+MuJoCo keeps a pair when ``contype_i & conaffinity_j | contype_j & conaffinity_i`` is non-zero,
+so the pads carry ``(contype=0, conaffinity=bit)`` and the band ``(contype=bit,
+conaffinity=0)``: they collide with each other and with no other geom in the model.  A second
+thigh surface that the skin, the ground and the other leg all had to account for would be a
+different - and much harder to read - experiment.
+"""
+
+_STRAP_TORSIONAL = 0.005
+_STRAP_ROLLING = 1e-4
+"""Rotational contact friction on the pad, left at the model default and deliberately small.
+
+The capacity of a clamp is its *sliding* friction times the preload.  Letting torsional
+friction hold part of the hip moment would put the number in the contact parameters instead of
+in the preload, where nothing measured it.
+"""
+
+
+def _align_z(direction: np.ndarray) -> np.ndarray:
+    """Rotation matrix whose local +z lies along ``direction`` (capsules and cylinders are
+    drawn along their local z), completed to a proper frame by Gram-Schmidt."""
+    z = _unit(direction)
+    pick = np.array([0.0, 0.0, 1.0]) if abs(z[2]) < 0.9 else np.array([1.0, 0.0, 0.0])
+    x = _unit(np.cross(pick, z))
+    return np.column_stack((x, np.cross(z, x), z))
+
+
+def _strap_slip_torque(friction: float, preload: float, radius: float) -> float:
+    """Hip flexion moment the clamped band passes before its pads slide: ``2*mu*N*r``.
+
+    Two pads, one either side of the thigh axis, each pressed with ``preload`` at moment arm
+    ``radius``.  This is the interface's ceiling, and below it the cuff is welded tight enough
+    that the drive, not the strap, is what limits the assistance.
+    """
+    return 2.0 * float(friction) * float(preload) * float(radius)
+
+
+def hip_torque_transfer(params: dict[str, Any], clamped: bool) -> dict[str, float]:
+    """Measured hip moment per unit hinge torque, for the interface that is actually built.
+
+    Both numbers are bench measurements, not model constants: ``hip_coupling`` is the
+    point-connected cuff (~0.12, the cuff carries force and no couple) and ``strap_interface``
+    is the clamped cuff (~1.0, measured on a settled quasi-static bench).  A controller that
+    referred a hip prescription through the wrong one would ask the drive for 8x too much - or
+    leave most of its authority unused - so the choice is made from the build, never by hand.
+    """
+    assist = params.get("assist", {})
+    block, key = (("strap_interface", "clamped_transfer") if clamped
+                  else ("hip_coupling", "hip_torque_transfer"))
+    table = assist.get(block, {}).get(key)
+    if not table:
+        raise KeyError(
+            f"lin1_exo_params.json records no assist.{block}.{key}; re-measure it before "
+            "running an assist controller on this interface"
+        )
+    return {side: float(value) for side, value in table.items()}
+
+
+def _add_strap_bands(
+    spec: mujoco.MjSpec,
+    frames: dict[str, Any],
+    model: mujoco.MjModel,
+    *,
+    preload: float,
+    friction: float,
+    radius: float,
+    pad_mass: float,
+    pad_thickness: float,
+    pad_half_length: float,
+    pad_half_width: float,
+    slide_range: tuple[float, float],
+    damping: float,
+    stiffness: float,
+    armature: float,
+    solref: tuple[float, float],
+    solimp: tuple[float, ...],
+    geom_group: int,
+    key: int,
+) -> dict[str, Any]:
+    """Clamp each cuff onto the thigh with a preloaded friction band.
+
+    The cuff is joined to the femur by a point-connect equality, which transmits force and no
+    couple, and the exo chain behind it is a four-bar whose only lever on the thigh is the 44 mm
+    crank pin.  A hinge torque therefore reaches the hip with a transfer of ~0.12: the 17 N.m
+    module puts about 2 N.m on the leg.  A cuff that is actually *worn* is clamped around the
+    limb, and a clamp carries a couple as two opposite friction forces either side of the
+    femur axis - which is what this adds, so the moment the device can deliver becomes
+    ``_strap_slip_torque`` instead of a property of the linkage.
+
+    Per side: one capsule on the thigh under the cuff (the band surface, and the moment arm),
+    and two domed pads hung off the cuff, each free to travel only along the line joining them,
+    pulled inward by an elastic strap (a preload force plus a spring).  The pads sit at whatever
+    angle the weld seeding left the cuff at, so their placement is read off ``model`` - the spec
+    as it stands, forward-kinematiced at the reset keyframe - rather than taken from the CAD
+    frame.
+
+    What the bench measures (``_probes/_strap_ceiling.py``) is a transfer of ~1.0, not the
+    ``_strap_slip_torque`` ceiling: the domed pads hold the cuff by bearing on the band, so they
+    do not slide before the drive saturates.  The preload's job is to make contact; the slip
+    torque is the torque at which they finally let go.
+
+    Args:
+        spec: the exo spec, cuff welds and seeded keyframes already in place.
+        frames: per-side geometry from :func:`attach_lin1_exo`; ``thigh_dir``, ``lateral`` and
+            ``attach`` are femur-frame, as the weld site uses them.
+        model: ``spec`` compiled before the pads are added, used only for its keyframes.
+        preload: normal force each pad presses with, N.
+        friction: pad-to-band sliding friction coefficient.
+        radius: band radius about the cuff anchor, m - also the clamp's moment arm.
+        pad_mass/thickness/half_length/half_width: the pad body and its envelope; the contact
+            surface is a dome of radius ``pad_thickness`` sitting on the band.
+        slide_range: pad travel along the clamp line, m.
+        damping: viscous damping on that travel, N s/m.
+        stiffness: elasticity of the strap, N/m - the travel at which the preload has relaxed
+            to zero is ``preload/stiffness``.
+        armature: reflected inertia on the slide, kg.  A 50 g pad on a 40 kN/m strap rings at
+            ~900 rad/s, which at a 1 ms step is at the integrator's stability edge; the
+            armature stands for the strap-and-pad assembly the clamp line actually moves, and
+            it is what makes the slide well conditioned.
+        solref/solimp: pad-to-band contact parameters.
+        geom_group: MuJoCo group the band and pads are drawn in.
+        key: which keyframe the wearer is standing in.
+
+    Returns the names to record, the pad moment arm, and the per-side slip torque.
+    """
+    data = mujoco.MjData(model)
+    data.qpos[:] = model.key_qpos[min(int(key), int(model.nkey) - 1)]
+    mujoco.mj_kinematics(model, data)
+
+    out: dict[str, Any] = {
+        "bodies": [], "joints": [], "actuators": [], "geoms": [], "sides": [],
+        "pad_radius_m": float(radius), "slip_torque_Nm": {},
+    }
+    quat_id = np.array([1.0, 0.0, 0.0, 0.0])
+    box_size = np.array([pad_half_length, pad_half_width, pad_thickness], dtype=float)
+    half = 2.0 * box_size
+    pad_inertia = pad_mass / 12.0 * np.array(
+        [half[1] ** 2 + half[2] ** 2, half[0] ** 2 + half[2] ** 2, half[0] ** 2 + half[1] ** 2]
+    )
+
+    for side in SIDES:
+        frame = frames[side]
+        femur = _get_body(spec, f"femur_{side}")
+        cuff = _get_body(spec, f"exo_cuff_{side}")
+        thigh_f = np.asarray(frame["thigh_dir"], dtype=float)
+        lateral_f = np.asarray(frame["lateral"], dtype=float)
+        rot_f = np.asarray(data.xmat[model.body(f"femur_{side}").id], float).reshape(3, 3)
+        rot_c = np.asarray(data.xmat[model.body(f"exo_cuff_{side}").id], float).reshape(3, 3)
+        thigh_w = _unit(rot_f @ thigh_f)
+        normal_w = _unit(np.cross(thigh_w, _unit(rot_f @ lateral_f)))
+
+        femur.add_geom(
+            name=f"exo_thigh_band_{side}",
+            type=mujoco.mjtGeom.mjGEOM_CAPSULE,
+            size=np.asarray([radius, pad_half_length + 0.02, 0.0], dtype=np.float64),
+            pos=np.asarray(frame["attach"], dtype=np.float64),
+            quat=_mat_to_quat(_align_z(thigh_f)),
+            mass=0.0,
+            contype=_STRAP_BIT,
+            conaffinity=0,
+            friction=np.array([friction, _STRAP_TORSIONAL, _STRAP_ROLLING]),
+            solref=np.asarray(solref, dtype=np.float64),
+            solimp=np.asarray(solimp, dtype=np.float64),
+            priority=1,
+            rgba=(0.72, 0.55, 0.42, 0.25),
+            group=geom_group,
+        )
+        out["geoms"].append(f"exo_thigh_band_{side}")
+
+        for index, sign in enumerate((1.0, -1.0)):
+            normal = normal_w * sign
+            x_c = rot_c.T @ thigh_w
+            z_c = rot_c.T @ normal
+            face_quat = _mat_to_quat(np.column_stack((x_c, np.cross(z_c, x_c), z_c)))
+            pad = cuff.add_body(
+                name=f"exo_strap_pad_{side}_{index}",
+                pos=np.asarray(rot_c.T @ (normal * (radius + pad_thickness)), dtype=np.float64),
+                quat=quat_id,
+            )
+            pad.mass = float(pad_mass)
+            pad.ipos = np.zeros(3)
+            pad.inertia = np.asarray(pad_inertia, dtype=np.float64)
+            # the pad is a box, so its principal axes are the box's own axes
+            pad.iquat = face_quat
+            jnt = pad.add_joint(
+                name=f"exo_strap_slide_{side}_{index}",
+                type=mujoco.mjtJoint.mjJNT_SLIDE,
+                pos=np.zeros(3),
+                axis=np.asarray(rot_c.T @ (-normal), dtype=np.float64),
+                range=np.asarray(slide_range, dtype=np.float64),
+                limited=True,
+                damping=float(damping),
+                armature=float(armature),
+                frictionloss=0.0,
+            )
+            # the contact is a dome, not a flat face: a 55x45 mm flat pad on a 67 mm thigh is a
+            # chord, and turning the cuff about the leg drove its corners into the band, which
+            # held the cuff by *form closure* whatever the preload.  A sphere touches on a
+            # point, so the only thing opposing a twist is sliding friction - mu*N - which is
+            # what the preload is supposed to set.
+            pad.add_geom(
+                name=f"exo_pad_face_{side}_{index}",
+                type=mujoco.mjtGeom.mjGEOM_SPHERE,
+                size=np.array([pad_thickness, 0.0, 0.0], dtype=np.float64),
+                pos=np.zeros(3),
+                mass=0.0,
+                contype=0,
+                conaffinity=_STRAP_BIT,
+                friction=np.array([friction, _STRAP_TORSIONAL, _STRAP_ROLLING]),
+                solref=np.asarray(solref, dtype=np.float64),
+                solimp=np.asarray(solimp, dtype=np.float64),
+                rgba=(0.85, 0.35, 0.30, 1.0),
+                group=geom_group,
+            )
+            act = spec.add_actuator(
+                name=f"exo_strap_preload_{side}_{index}",
+                type=mujoco.mjtActuator.mjACTUATOR_GENERAL,
+                trntype=mujoco.mjtTrn.mjTRN_JOINT,
+                target=jnt.name,
+            )
+            act.gear = np.asarray([1.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float64)
+            act.dyntype = mujoco.mjtDyn.mjDYN_NONE
+            act.biastype = mujoco.mjtBias.mjBIAS_AFFINE
+            biasprm = np.zeros((10, 1))
+            # affine bias is  b0 + b1*qpos + b2*qvel.  b0 is the strap tension; b1 is the
+            # strap's own elasticity.  b0 alone is not enough: with no restoring term the pad
+            # is a constant-force slider whose drift speed is force/damping, and any component
+            # of contact friction along the slide walks it out through the stop.  A strap
+            # tightens to a length, it does not push with a constant force, so the spring is
+            # the physical term - and it is what gives the pad a stable equilibrium.
+            biasprm[0, 0] = float(preload)
+            biasprm[1, 0] = -float(stiffness)
+            act.biasprm = biasprm
+            out["bodies"].append(pad.name)
+            out["joints"].append(jnt.name)
+            out["actuators"].append(act.name)
+
+        out["slip_torque_Nm"][side] = _strap_slip_torque(friction, preload, radius)
+        out["sides"].append(side)
+    return out
+
+
 def attach_lin1_exo(
     spec: mujoco.MjSpec,
     params: dict[str, Any] | None = None,
@@ -388,6 +854,7 @@ def attach_lin1_exo(
     weld: bool = True,
     damping: float = 0.05,
     armature: float = 0.0,
+    motor: ExoMotorConfig | None = None,
     flexion_range: tuple[float, float] = (-1.6, 1.6),
     roll_range: tuple[float, float] = (-1.2, 1.2),
     slot_range: tuple[float, float] = (-0.06, 0.06),
@@ -405,6 +872,24 @@ def attach_lin1_exo(
     slot_mass: float = 0.01,
     weld_solref: tuple[float, float] = (0.01, 1.0),
     weld_solimp: tuple[float, ...] = (0.9, 0.95, 0.001, 0.5, 2.0),
+    # ---- wearing interface (see _add_strap_bands) ------------------------------------
+    # The cuff weld is a point connection, so it carries force and no couple and the hip
+    # sees ~0.12 of the hinge torque.  Preloading a friction band around the thigh is what
+    # turns that into a clamp.  preload = 0 (the default) builds no pads at all, which
+    # leaves every model made without it byte-identical.
+    strap_preload: float = 0.0,
+    strap_friction: float = 0.5,
+    strap_radius: float = 0.067,
+    strap_pad_mass: float = 0.05,
+    strap_pad_thickness: float = 0.012,
+    strap_pad_half_length: float = 0.055,
+    strap_pad_half_width: float = 0.045,
+    strap_slide_range: tuple[float, float] = (-0.012, 0.012),
+    strap_damping: float = 20.0,
+    strap_stiffness: float = 40000.0,
+    strap_pad_armature: float = 0.2,
+    strap_solref: tuple[float, float] = (0.02, 1.0),
+    strap_solimp: tuple[float, ...] = (0.1, 0.9, 0.005, 0.5, 2.0),
     geom_group: int = 1,
     add_visuals: bool = True,
     visual_style: str = "mesh",
@@ -420,6 +905,9 @@ def attach_lin1_exo(
         weld: add the cuff/femur welds (only used when ``locked=False``).
         damping: passive viscous damping on both exo hinges (Nm s/rad).
         armature: rotor/structural inertia added to the exo hinges.
+        motor: when given, power the flexion hinge with a native ``<dcmotor>`` drive chain and
+            add the torque readout sensors.  ``None`` (the default) leaves the exoskeleton a
+            passive linkage, so every model built without it is unchanged.
         flexion_range: hip flexion/extension limits (human hip flexion range plus a small
             margin, so the strap stretch cannot push the exo hinge into its stop).
         roll_range: passive link roll limits (pin-in-slot travel, rad).
@@ -428,6 +916,25 @@ def attach_lin1_exo(
             kinematically reachable (the reset gap is exactly zero), so the strap tracks the
             thigh instead of lagging 20-40 mm behind it on every stride.
         weld_solimp: thigh strap impedance parameters - a stiff, padded strap.
+        strap_preload: normal force each strap pad presses the thigh with, N.  ``0`` (the
+            default) builds no pads at all and leaves the cuff a point connection; see
+            :func:`_add_strap_bands` for why that is the difference between 2 N.m and a real
+            hip moment.
+        strap_friction: sliding friction coefficient between pad and thigh band - together
+            with ``strap_preload`` and ``strap_radius`` it sets the slip torque 2*mu*N*r.
+        strap_radius: moment arm of the band about the cuff anchor, m.  It is also where the
+            pads sit, so it is the thigh radius at the cuff station (the model's own thigh
+            capsule is 67 mm there).
+        strap_pad_mass/strap_pad_thickness/strap_pad_half_length/strap_pad_half_width: the
+            pad body, one either side of the leg; its contact surface is a dome.
+        strap_slide_range: how far a pad can travel along the clamp line, m.
+        strap_damping: viscous damping on the pad travel, N s/m - a strap does not ring.
+        strap_stiffness: the strap's elasticity, N/m.  The preload has decayed to zero at
+            ``preload/strap_stiffness`` of travel, so the default (40 kN/m) lets a 100 N
+            clamp give 2.5 mm.
+        strap_pad_armature: reflected inertia on the pad slide, kg - see
+            :func:`_add_strap_bands`.
+        strap_solref/strap_solimp: pad-to-band contact parameters.
         geom_group: MuJoCo geom group used for the exo visuals.
         add_visuals: add the exo visuals at all.
         visual_style: ``"mesh"`` draws the real CAD tessellation (one STL per rigid-body
@@ -442,6 +949,11 @@ def attach_lin1_exo(
     """
     if params is None:
         params = load_exo_params()
+    if strap_preload and (locked or not weld):
+        raise ValueError(
+            "strap_preload clamps the cuff to the thigh, which needs the welded chain "
+            "(locked or weld=False leaves nothing to clamp)"
+        )
     groups = params["groups"]
     landmarks = params["landmarks"]
     if mesh_dir is None:
@@ -562,6 +1074,10 @@ def attach_lin1_exo(
         # the cuff body sits hip_to_cuff down the link from the hip, so its anchor is
         # hip_cad + R^T @ cuff_local
         cuff_anchor = hip_cad + _R_CAD_TO_PELVIS.T @ cuff_local
+        # Where the strap closes onto the thigh, in the femur frame: on the femur axis,
+        # hip_to_cuff down the leg, moved outboard by ``thigh_radius`` if the wearer's cuff
+        # is set off the bone.  This is both the weld anchor and the band's centre station.
+        attach_pt = hip_to_cuff * thigh + thigh_radius * lateral
 
         # The hip module's bent rod is bolted to the motor output, so it turns with the hip
         # hinge.  The long link does not hinge at the hip: it hangs off the rod's pin, 44 mm
@@ -615,6 +1131,8 @@ def attach_lin1_exo(
         }
         joint_names: list[str] = []
         weld_names: list[str] = []
+        actuator_names: list[str] = []
+        sensor_names: list[str] = []
 
         for name, (body, rgba, anchor) in bodies.items():
             grp = groups[name]
@@ -708,8 +1226,7 @@ def attach_lin1_exo(
                 # the strap sits on the thigh surface, one thigh radius outboard of the
                 # femur axis, and spans only the few millimetres to the cuff - the cuff
                 # lands on the thigh because link_dir keeps its CAD medial tilt
-                attach = hip_to_cuff * thigh + thigh_radius * lateral
-                attach_sites[side] = femur.add_site(name=f"exo_attach_{side}", pos=attach)
+                attach_sites[side] = femur.add_site(name=f"exo_attach_{side}", pos=attach_pt)
                 # The cuff site sits ON the roll axis.  Offsetting it one thigh radius to
                 # give the strap a third translating DOF was tried and rejected: correcting
                 # tens of millimetres of gap that way needs >1.2 rad of roll, which pins the
@@ -732,10 +1249,23 @@ def attach_lin1_exo(
                 eq.solimp = np.asarray(weld_solimp, dtype=np.float64)
                 weld_names.append(eq.name)
 
+            if motor is not None:
+                # attached after the cuff site exists, so the strap wrench can hang off it
+                act_name, sens_names = _add_hip_drive(
+                    spec,
+                    side,
+                    j1.name,
+                    motor,
+                    strap_site=f"exo_cuff_site_{side}" if weld else None,
+                )
+                actuator_names.append(act_name)
+                sensor_names += sens_names
+
         frames[side] = {
             "hip_pelvis": hip,
             "thigh_dir": thigh,
             "lateral": lateral,
+            "attach": attach_pt,
             "exo_axis": exo_axis,
             "exo_lateral": exo_lateral,
             "link_dir": link_dir,
@@ -743,6 +1273,8 @@ def attach_lin1_exo(
             "hip_to_cuff": hip_to_cuff,
             "joint_names": joint_names,
             "weld_names": weld_names,
+            "actuator_names": actuator_names,
+            "sensor_names": sensor_names,
         }
         if not locked:
             # Neutral exo pose: the flexion hinge is pre-rotated until the link points along
@@ -759,19 +1291,58 @@ def attach_lin1_exo(
     if added_dof:
         _seed_keyframe_exo_dofs(spec, added_dof, seed_map, attach_sites)
 
+    # Built last, on purpose: the pads have to be placed relative to the cuff as the weld
+    # seeding left it, and the seeding itself must not spend any of the pad travels.
+    strap: dict[str, Any] = {"bodies": [], "joints": [], "actuators": [], "geoms": [],
+                             "sides": [], "slip_torque_Nm": {}}
+    if strap_preload and not locked and weld:
+        before = spec.compile()
+        strap = _add_strap_bands(
+            spec,
+            frames,
+            before,
+            preload=float(strap_preload),
+            friction=float(strap_friction),
+            radius=float(strap_radius),
+            pad_mass=float(strap_pad_mass),
+            pad_thickness=float(strap_pad_thickness),
+            pad_half_length=float(strap_pad_half_length),
+            pad_half_width=float(strap_pad_half_width),
+            slide_range=tuple(strap_slide_range),
+            damping=float(strap_damping),
+            stiffness=float(strap_stiffness),
+            armature=float(strap_pad_armature),
+            solref=strap_solref,
+            solimp=strap_solimp,
+            geom_group=geom_group,
+            key=_RESET_KEY,
+        )
+        if strap["joints"]:
+            _reseat_keyframes(spec, before)
+
     return {
         "locked": bool(locked),
         "weld": bool(weld and not locked),
-        "added_dof": added_dof,
+        "strap": bool(strap["joints"]),
+        "added_dof": added_dof + len(strap["joints"]),
         "bodies": ["exo_frame"]
         + [f"exo_crank_{s}" for s in SIDES]
         + [f"exo_link_{s}" for s in SIDES]
         + [f"exo_slot_{s}" for s in SIDES if not locked]
-        + [f"exo_cuff_{s}" for s in SIDES],
-        "joints": [n for side in SIDES for n in frames[side]["joint_names"]],
+        + [f"exo_cuff_{s}" for s in SIDES]
+        + strap["bodies"],
+        "joints": [n for side in SIDES for n in frames[side]["joint_names"]] + strap["joints"],
         "welds": [n for side in SIDES for n in frames[side]["weld_names"]],
+        "actuators": [n for side in SIDES for n in frames[side]["actuator_names"]],
+        "strap_actuators": strap["actuators"],
+        "strap_joints": strap["joints"],
+        "strap_geoms": strap["geoms"],
+        "strap_sides": list(strap["sides"]),
+        "strap_slip_torque_Nm": strap["slip_torque_Nm"],
+        "sensors": [n for side in SIDES for n in frames[side]["sensor_names"]],
         "frames": frames,
         "exo_mass_kg": float(sum(groups[n]["mass_kg"] for n in groups)),
+        "strap_mass_kg": float(len(strap["bodies"]) * strap_pad_mass),
     }
 
 
@@ -1211,6 +1782,48 @@ def _pad_keyframes(spec: mujoco.MjSpec, added_dof: int) -> None:
             key.qpos = np.concatenate([np.asarray(key.qpos, dtype=float), np.zeros(added_dof)])
         if key.qvel is not None:
             key.qvel = np.concatenate([np.asarray(key.qvel, dtype=float), np.zeros(added_dof)])
+
+
+def _joint_addresses(model: mujoco.MjModel) -> dict[str, tuple[int, int]]:
+    """``joint name -> (qpos address, dof address)`` of one compiled model."""
+    out: dict[str, tuple[int, int]] = {}
+    for jid in range(int(model.njnt)):
+        name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, jid)
+        if name:
+            out[name] = (int(model.jnt_qposadr[jid]), int(model.jnt_dofadr[jid]))
+    return out
+
+
+def _reseat_keyframes(spec: mujoco.MjSpec, before: mujoco.MjModel) -> None:
+    """Carry the seeded keyframes across a late insertion into the joint list.
+
+    Joints are numbered by tree traversal, and a body hung off the cuff is traversed *before*
+    the next side's chain - so the strap pads do not append to the qpos block, they insert into
+    it, and the seed that closed the right cuff would otherwise open the left one and shove a
+    pad 80 cm along its travel.  Copy every named coordinate across by joint name; the pads
+    themselves start at rest, touching the band.
+    """
+    after = spec.compile()
+    old_adr, new_adr = _joint_addresses(before), _joint_addresses(after)
+    added = [name for name in new_adr if name not in old_adr]
+    for key in spec.keys:
+        for field, idx in ((getattr(key, "qpos", None), 0), (getattr(key, "qvel", None), 1)):
+            if field is None:
+                continue
+            source = np.asarray(field, dtype=float)
+            moved = np.zeros(int(after.nq if idx == 0 else after.nv))
+            moved[: source.size] = source
+            for name, address in old_adr.items():
+                if name in new_adr:
+                    moved[new_adr[name][idx]] = source[address[idx]]
+            # the positional copy above dropped the old neighbour's number into every new
+            # joint's slot; a pad that has never been seeded starts at rest against the band
+            for name in added:
+                moved[new_adr[name][idx]] = 0.0
+            if idx == 0:
+                key.qpos = moved
+            else:
+                key.qvel = moved
 
 
 def _seed_keyframe_exo_dofs(

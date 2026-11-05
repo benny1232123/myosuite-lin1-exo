@@ -391,6 +391,76 @@
       ]
     }
   },
+  "actuator": {
+    "uncalibrated": false,
+    "model": "mujoco-dcmotor",
+    "datasheet": {
+      "device": "RobStride RS02 (ROBSTRIDE 02) 17 N.m integrated QDD module, one per hip",
+      "document": "RS02 使用说明书 261009, sections 1.2-1.4",
+      "repository": "github.com/RobStride/Product_Information",
+      "retrieved": "2026-11-03",
+      "quoted": "48 VDC rated (24-60 V), 7.75:1, 28 poles, 405 g; no-load 410 rpm at 0.5 Arms; rated 6 N.m @ 100 rpm at 7 Apk; peak 17 N.m at 23 Apk; back-EMF 9.6 Vrms/krpm; torque constant 1.22 N.m/Arms; all figures +/-10%"
+    },
+    "calibration_note": "K and R are fitted, not copied: <dcmotor> has no efficiency parameter and one K serves torque and back-EMF, so the drivetrain loss is folded into R_eff and gear_efficiency is pinned at 1. K = V/(N*omega_no_load) = 48/(7.75*42.94) = 0.14425, and the same constant re-fitted from the 36 V T-N curve (zero torque at ~305 rpm) gives 0.14544 - 99.2% agreement. R_eff = 1.42432 comes from the slope of the 48 V curve read from its 17 N.m cap (225 rpm) to zero (410 rpm), so the fitted line reproduces the published curve rather than an idealised one; the unclamped electrical stall is 37.7 N.m and the driver's 23 Apk is what makes 17 N.m the ceiling, which is why saturation is load-bearing and not decoration. Residual model-vs-datasheet current error is -6.4% at the cap and +8.5% at rated torque, inside the +/-10% the document itself quotes. One RS02 per hip, which is what the model attaches. The CAD hipmod mass, 0.4156 kg, agrees with the document's 405 +/-3 g to 2.6%, so the inertial side of the module was already right. Still unmeasured: rotor_inertia_kg_m2 (see estimated_fields) - measured leverage is small, it adds N^2*J = 9.6e-4 kg.m^2 to a hinge whose own inertia is 0.0226, i.e. 4.2% of the exo link and 0.04% of the human thigh about the hip, and even a 10x error moves the human-side inertia by 0.36%, so it is not worth bench time unless a high-rate torque loop is added; the thermal derating between 6 and 17 N.m (the document gives 17 N.m for 10 s running / 6 s stalled and 13 N.m for 42 s against a 260x280 mm heat sink, which is L2 data); the 0.5 Arms no-load friction current (about 0.6 N.m of coulomb loss at the joint, not modelled); and anything about the real winding temperature.",
+    "estimated_fields": ["rotor_inertia_kg_m2"],
+    "bus_voltage_V": 48.0,
+    "gear_ratio": 7.75,
+    "gear_efficiency": 1.0,
+    "torque_constant_Nm_A": 0.144254,
+    "winding_resistance_ohm": 1.42432,
+    "rotor_inertia_kg_m2": 1.6e-05,
+    "peak_joint_torque_Nm": 17.0,
+    "continuous_joint_torque_Nm": 6.0,
+    "inductance_H": null,
+    "cogging_torque_Nm": 0.0
+  },
+  "assist": {
+    "hip_coupling": {
+      "measured": "2026-11-03",
+      "provenance": "one 1500-step episode of walk_exo_policy.zip on myoLegWalkExo-v0 with the drive absent (the passing eval_walk_exo.py baseline: 21.90 m, 1.46 m/s); slope of a linear fit of each exo hip flexion hinge angle against the human hip flexion angle of the same side over the whole episode",
+      "hip_flexion_gain": {
+        "r": 0.9659,
+        "l": -0.9081
+      },
+      "correlation": {
+        "r": 0.9978,
+        "l": -0.9976
+      },
+      "hip_torque_transfer": {
+        "r": -0.118,
+        "l": 0.120
+      },
+      "torque_transfer_provenance": "measured 2026-11-03 with _probes/_coupling_matrix.py and _lever_sweep.py: the drive slots are held at the voltage that commands a known hinge torque from an otherwise identical state (qvel zeroed, muscles relaxed), and the change in data.qfrc_constraint on the human hip flexion dof divided by that torque is the transfer. 0.118 N.m at the hip per 1 N.m at the hinge, flat to within 1% across +/-6 N.m, across hip flexion from -0.45 to +0.45 rad, and across cuff anchors from 0 to 0.07 m.",
+      "torque_transfer_note": "The angle gains above are NOT torque gains, and using them as one overstates the assistance by 8x. The cuff is tied to the femur by mjEQ_CONNECT, which carries force at a point and no moment, so the hinge torque leaves the exo along two paths: a small one through the cuff force (this number) and the rest as the housing reaction into the waist frame and therefore into the wearer's trunk rather than the hip joint. Read the signs against the hip flexion convention: +1 N.m on exo_hip_flexion_r extends the right hip, which is why a push-off pulse is a NEGATIVE hip_flexion_torque on both sides even though the two angle gains have opposite signs. The consequence for assistance is blunt - with this interface the 17 N.m module can put at most ~2 N.m on the hip, so a prescription of 6 N.m is a request the machine cannot keep and the log says so.",
+      "lag_steps": 0,
+      "flexion_peak_clock_phase": {
+        "r": 0.04,
+        "l": 0.483
+      },
+      "extension_peak_clock_phase": {
+        "r": 0.531,
+        "l": 0.995
+      },
+      "peak_hinge_speed_while_extending_rad_s": {
+        "r": 9.126,
+        "l": 7.883
+      },
+      "note": "The two sides are coupled with OPPOSITE signs: positive exo_hip_flexion_r extends nothing, it flexes the right hip, while positive exo_hip_flexion_l flexes the left hip negatively. A controller written symmetrically about the joint name therefore assists one leg and resists the other. The clock phases are fractions of walk.py's own (steps / hip_period) % 1 oscillator, which is what the task's cyclic reward is locked to. The linkage is near 1:1 and has no measured lag, so the hinge tracks the hip it is welded to.",
+      "drive_headroom": "holding the full 17 N.m at the fastest hinge speed seen in the gait (9.13 rad/s) costs 31.9 V of the 48 V bus, so across a normal cycle the assistance authority is the torque saturation, not the torque-speed envelope; the envelope only starts to bite above 23.6 rad/s"
+    },
+    "strap_interface": {
+      "measured": "2026-11-03",
+      "provenance": "_probes/_strap_ceiling.py, a quasi-static bench: the musculoskeletal dofs are pinned at the seeded standing keyframe, the drive is held at a constant hinge torque for 400 ms with the back-EMF-compensated voltage re-solved every physics step, and the hip row of data.qfrc_constraint is read once the exo has settled. The hip is pinned, so that row is the reaction holding it and the moment the exo delivers is its negative; the sign convention of hip_torque_transfer above (r negative, l positive) is preserved.",
+      "clamped_transfer": {
+        "r": -1.065,
+        "l": 1.003
+      },
+      "clamped_transfer_provenance": "flat to within 2% across 1-17 N.m at the hinge and across 25-400 N of preload, on the domed pads with the strap modelled as a spring (40 kN/m) rather than a constant-force slider. A single-mj_forward sandwich reads only 0.05 of this, because MuJoCo's static friction is an elastic response that has to be loaded over time.",
+      "clamp_capacity_note": "2*mu*N*r is still the torque at which the pads can slide (6.7 N.m per side at 100 N, 26.8 N.m at 400 N), but it does not limit the hip moment below the drive's 17 N.m: the domed pads carry the moment by contact bearing on the thigh band, so the clamp never reaches its sliding limit. Preload buys contact, not capacity, above roughly 25 N.",
+      "gait_note": "the clamped build does not survive the published gait: it ends at ~200 steps at 0.001 N of preload and at 250-600 steps for 25-400 N, against 1500 steps and 21.90 m for the point-connected cuff. Clamping the cuff couples the exo chain's rotation to the thigh, a load the point-cuff policy was never trained on. The clamp is a build option for retraining, not a drop-in for walk_exo_policy.zip.",
+      "preload_zero_unchanged": "preload 0 builds no pads at all, so eval_walk_exo.py on walk_exo_policy.zip is unchanged: 1500/1500 steps, 21.90 m, alternating contacts, zero exo torque."
+    }
+  },
   "groups_named": {
     "frame": "waist/back frame",
     "bracket_r": "hip adapter bracket R",
