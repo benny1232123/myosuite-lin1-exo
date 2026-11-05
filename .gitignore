@@ -182,6 +182,8 @@ finetune_ckpt*/
 ckpt_exo*/
 tb_logs*/
 /finetuned_*.zip
+# the one policy every result in the README is measured on
+!/finetuned_cal070_a12.zip
 /finetuned_*_info.json
 /finetune_episodes.csv
 /_*.png

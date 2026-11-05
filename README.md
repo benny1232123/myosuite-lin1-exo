@@ -95,8 +95,9 @@ python scripts/frozen_ab_walk_exo.py --policy finetuned_cal070_a12.zip \
 ```
 myosuite/envs/myo/tasks/basic/leg/lin1_exo.py   装置几何 + 电机
 myosuite/envs/myo/tasks/basic/leg/walk_exo.py   环境（佩戴 / 驱动 / 辅助旋钮）
-myosuite/tests/                                 266 项测试
+myosuite/tests/                                 273 项测试
 scripts/                                        查看、验收、A/B、训练、出视频
+finetuned_cal070_a12.zip                        本页所有结果用的策略（12 N·m 训练、肌力 0.70）
 ```
 
 ## 还没做的
