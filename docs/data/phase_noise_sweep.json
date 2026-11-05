@@ -1,0 +1,22 @@
+{
+ "note": "12 perturbed initial states per cell, policy finetuned_cal070_a12.zip, assist 12 N.m, width 0.30, preload 50, force scale 0.70; easy = init/vel noise 0.001, hard = 0.004",
+ "easy": {
+  "control": 3,
+  "0.02": 6,
+  "0.04": 10,
+  "0.05": 10,
+  "0.06": 7,
+  "0.08": 3,
+  "0.3": 3
+ },
+ "hard": {
+  "control": 4,
+  "0.0": 5,
+  "0.02": 4,
+  "0.04": 3,
+  "0.05": 5,
+  "0.06": 7,
+  "0.08": 4,
+  "0.3": 0
+ }
+}
