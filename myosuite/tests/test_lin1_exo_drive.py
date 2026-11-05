@@ -437,3 +437,58 @@ def test_an_over_request_is_reported_as_saturation_instead_of_silently_limited()
     assert np.all(np.abs(log["voltage"]) <= motor.bus_voltage + 1e-9)
     peak = np.abs(log["commanded_hinge_torque"]).max()
     assert peak > motor.peak_joint_torque, "the request never left the envelope"
+
+
+# -- thermal derating ---------------------------------------------------------------------
+def test_the_cap_starts_at_the_peak_and_reaches_zero_at_the_winding_limit() -> None:
+    assert motor.torque_cap(motor.ambient_C) == pytest.approx(motor.peak_joint_torque)
+    assert motor.torque_cap(motor.winding_max_C) == pytest.approx(0.0)
+    caps = [motor.torque_cap(t)
+            for t in np.linspace(motor.ambient_C, motor.winding_max_C, 9)]
+    assert all(a >= b - 1e-9 for a, b in zip(caps, caps[1:])), caps
+
+
+def test_the_two_published_thermal_points_reproduce() -> None:
+    """6 N.m indefinitely and 13 N.m for 42 s are the document's points; the time constant
+    was derived from the second, so the model has to land on the limit there."""
+    t = motor.ambient_C
+    for _ in range(int(42 / 0.01)):
+        t = motor.winding_after(13.0, t, 0.01)
+    assert t == pytest.approx(motor.winding_max_C, abs=1.5)
+
+    t = motor.ambient_C
+    for _ in range(int(10 / 0.01)):
+        t = motor.winding_after(17.0, t, 0.01)
+    for _ in range(int(6 / 0.01)):
+        t = motor.winding_after(0.0, t, 0.01)
+    assert t < motor.ambient_C + 0.6 * (motor.winding_max_C - motor.ambient_C), t
+
+
+def test_the_winding_heats_and_the_request_is_clipped_to_the_cap() -> None:
+    env = make_env(EXO_ENV, exo_motor=True, exo_assist_torque=motor.peak_joint_torque,
+                   exo_assist_phase_lead=0.05, exo_thermal_derate=True).unwrapped
+    env.reset(seed=0)
+    assert np.allclose(env._winding_temp, motor.ambient_C)
+    action = np.zeros(env.action_space.shape, dtype=np.float32)
+    for _ in range(env.hip_period * 10):            # 10 s of walking
+        env.step(action)
+    log = env.assist_summary()
+    assert log["winding_temp"][-1].max() > motor.ambient_C + 1.0
+    assert log["torque_cap"][-1].min() < motor.peak_joint_torque
+    # nothing may be asked past the cap that the temperature allows
+    assert np.all(np.abs(log["commanded_hinge_torque"]) <= log["torque_cap"] + 1e-6)
+
+
+def test_the_thermal_model_is_off_by_default_and_resets_cold() -> None:
+    env = make_env(EXO_ENV, exo_motor=True, exo_assist_torque=12.0).unwrapped
+    env.reset(seed=0)
+    action = np.zeros(env.action_space.shape, dtype=np.float32)
+    for _ in range(env.hip_period * 3):
+        env.step(action)
+    log = env.assist_summary()
+    assert np.allclose(log["winding_temp"], motor.ambient_C)
+    assert np.allclose(log["torque_cap"], motor.peak_joint_torque)
+
+    env.reset(seed=0)
+    assert np.allclose(env._winding_temp, motor.ambient_C)
+    assert env.assist_summary()["winding_temp"].size == 0

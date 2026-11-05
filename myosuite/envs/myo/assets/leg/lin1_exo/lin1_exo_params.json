@@ -402,7 +402,9 @@
       "quoted": "48 VDC rated (24-60 V), 7.75:1, 28 poles, 405 g; no-load 410 rpm at 0.5 Arms; rated 6 N.m @ 100 rpm at 7 Apk; peak 17 N.m at 23 Apk; back-EMF 9.6 Vrms/krpm; torque constant 1.22 N.m/Arms; all figures +/-10%"
     },
     "calibration_note": "K and R are fitted, not copied: <dcmotor> has no efficiency parameter and one K serves torque and back-EMF, so the drivetrain loss is folded into R_eff and gear_efficiency is pinned at 1. K = V/(N*omega_no_load) = 48/(7.75*42.94) = 0.14425, and the same constant re-fitted from the 36 V T-N curve (zero torque at ~305 rpm) gives 0.14544 - 99.2% agreement. R_eff = 1.42432 comes from the slope of the 48 V curve read from its 17 N.m cap (225 rpm) to zero (410 rpm), so the fitted line reproduces the published curve rather than an idealised one; the unclamped electrical stall is 37.7 N.m and the driver's 23 Apk is what makes 17 N.m the ceiling, which is why saturation is load-bearing and not decoration. Residual model-vs-datasheet current error is -6.4% at the cap and +8.5% at rated torque, inside the +/-10% the document itself quotes. One RS02 per hip, which is what the model attaches. The CAD hipmod mass, 0.4156 kg, agrees with the document's 405 +/-3 g to 2.6%, so the inertial side of the module was already right. Still unmeasured: rotor_inertia_kg_m2 (see estimated_fields) - measured leverage is small, it adds N^2*J = 9.6e-4 kg.m^2 to a hinge whose own inertia is 0.0226, i.e. 4.2% of the exo link and 0.04% of the human thigh about the hip, and even a 10x error moves the human-side inertia by 0.36%, so it is not worth bench time unless a high-rate torque loop is added; the thermal derating between 6 and 17 N.m (the document gives 17 N.m for 10 s running / 6 s stalled and 13 N.m for 42 s against a 260x280 mm heat sink, which is L2 data); the 0.5 Arms no-load friction current (about 0.6 N.m of coulomb loss at the joint, not modelled); and anything about the real winding temperature.",
-    "estimated_fields": ["rotor_inertia_kg_m2"],
+    "estimated_fields": [
+      "rotor_inertia_kg_m2"
+    ],
     "bus_voltage_V": 48.0,
     "gear_ratio": 7.75,
     "gear_efficiency": 1.0,
@@ -412,7 +414,13 @@
     "peak_joint_torque_Nm": 17.0,
     "continuous_joint_torque_Nm": 6.0,
     "inductance_H": null,
-    "cogging_torque_Nm": 0.0
+    "cogging_torque_Nm": 0.0,
+    "thermal": {
+      "ambient_C": 25.0,
+      "winding_max_C": 100.0,
+      "time_constant_s": 175.0,
+      "source": "tau from the document's two points: 6 N.m indefinite and 13 N.m for 42 s against a 260x280 mm heat sink give tau = 42 / -ln(1-(6/13)^2) = 175 s; the third point (17 N.m, 10 s on / 6 s off = 13.4 N.m RMS for 16 s) reaches only 43% of the steady rise, which the same tau predicts.  ambient is room temperature; winding_max_C is an assumption about insulation class, not from the document, and it sets where the derating reaches zero."
+    }
   },
   "assist": {
     "hip_coupling": {
@@ -428,7 +436,7 @@
       },
       "hip_torque_transfer": {
         "r": -0.118,
-        "l": 0.120
+        "l": 0.12
       },
       "torque_transfer_provenance": "measured 2026-11-03 with _probes/_coupling_matrix.py and _lever_sweep.py: the drive slots are held at the voltage that commands a known hinge torque from an otherwise identical state (qvel zeroed, muscles relaxed), and the change in data.qfrc_constraint on the human hip flexion dof divided by that torque is the transfer. 0.118 N.m at the hip per 1 N.m at the hinge, flat to within 1% across +/-6 N.m, across hip flexion from -0.45 to +0.45 rad, and across cuff anchors from 0 to 0.07 m.",
       "torque_transfer_note": "The angle gains above are NOT torque gains, and using them as one overstates the assistance by 8x. The cuff is tied to the femur by mjEQ_CONNECT, which carries force at a point and no moment, so the hinge torque leaves the exo along two paths: a small one through the cuff force (this number) and the rest as the housing reaction into the waist frame and therefore into the wearer's trunk rather than the hip joint. Read the signs against the hip flexion convention: +1 N.m on exo_hip_flexion_r extends the right hip, which is why a push-off pulse is a NEGATIVE hip_flexion_torque on both sides even though the two angle gains have opposite signs. The consequence for assistance is blunt - with this interface the 17 N.m module can put at most ~2 N.m on the hip, so a prescription of 6 N.m is a request the machine cannot keep and the log says so.",

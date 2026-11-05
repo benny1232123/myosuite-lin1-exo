@@ -121,6 +121,8 @@ _ASSIST_LOG_KEYS = (
     "voltage",
     "current",
     "saturated",
+    "winding_temp",
+    "torque_cap",
 )
 
 
@@ -209,6 +211,7 @@ class LegWalkExoEnvV0(LegWalkEnvV0):
         exo_assist_torque: float | None = None,
         exo_assist_phase_lead: float = 0.15,
         exo_assist_width: float = 0.30,
+        exo_thermal_derate: bool = False,
         **kwargs: Any,
     ) -> None:
         if exo_motor and exo_locked:
@@ -233,6 +236,8 @@ class LegWalkExoEnvV0(LegWalkEnvV0):
         self._exo_motor_names: list[str] = []
         self._exo_assist_transfer: np.ndarray = np.zeros(0)
         self._exo_assist_extension: np.ndarray = np.zeros(0)
+        self._exo_thermal = bool(exo_thermal_derate)
+        self._winding_temp: np.ndarray = np.zeros(0)
         self.assist_log: dict[str, list] = {
             key: [] for key in _ASSIST_LOG_KEYS
         }
@@ -459,6 +464,12 @@ class LegWalkExoEnvV0(LegWalkEnvV0):
         """Start an episode: the drive is unpowered and the assist trace is empty."""
         out = super().reset(seed=seed, options=options, **kwargs)
         self.assist_log = {key: [] for key in _ASSIST_LOG_KEYS}
+        # the winding starts cold at the start of every episode, so a reset fully determines
+        # the rollout.  It is tracked even with the thermal model off, where it stays at
+        # ambient, so the assist log has the same shape either way.
+        if self._exo_motor is not None:
+            self._winding_temp = np.full(self._exo_motor_dof_adr.shape[0],
+                                         self._exo_motor.ambient_C)
         return out
 
     # -- assist control ----------------------------------------------------------------
@@ -503,6 +514,17 @@ class LegWalkExoEnvV0(LegWalkEnvV0):
         shape = np.array([_extension_pulse(phase, c, cfg.width) for c in centers])
         hip_torque = cfg.hip_flexion_torque * shape
         hinge_torque = hip_torque / self._exo_assist_transfer
+        if self._winding_temp.shape != hinge_torque.shape:
+            self._winding_temp = np.full(hinge_torque.shape, motor.ambient_C)
+        cap = np.full(hinge_torque.shape, motor.peak_joint_torque)
+        if self._exo_thermal:
+            cap = np.array([motor.torque_cap(t) for t in self._winding_temp])
+            hinge_torque = np.clip(hinge_torque, -cap, cap)
+            hip_torque = hinge_torque * self._exo_assist_transfer
+            self._winding_temp = np.array(
+                [motor.winding_after(t, temp, float(self.model.opt.timestep))
+                 for t, temp in zip(hinge_torque, self._winding_temp)]
+            )
         speed = self.data.qvel[self._exo_motor_dof_adr]
         voltage = np.array(
             [motor.voltage_for_torque(t, w) for t, w in zip(hinge_torque, speed)]
@@ -512,10 +534,12 @@ class LegWalkExoEnvV0(LegWalkEnvV0):
             [motor.envelope(v, w) for v, w in zip(voltage, speed)]
         )
         saturated = np.abs(reachable) + 1e-9 < np.abs(hinge_torque)
-        return phase, hip_torque, hinge_torque, voltage, saturated
+        return (phase, hip_torque, hinge_torque, voltage, saturated,
+                self._winding_temp.copy(), cap.copy())
 
     def _log_assist(self, request: tuple) -> None:
-        phase, hip_torque, hinge_torque, voltage, saturated = request
+        (phase, hip_torque, hinge_torque, voltage, saturated,
+         winding_temp, cap) = request
         state = self.exo_motor_state()
         log = self.assist_log
         log["phase"].append(phase)
@@ -530,6 +554,8 @@ class LegWalkExoEnvV0(LegWalkEnvV0):
         log["voltage"].append(voltage)
         log["current"].append(state["current"].copy())
         log["saturated"].append(saturated)
+        log["winding_temp"].append(winding_temp)
+        log["torque_cap"].append(cap)
 
     def assist_summary(self) -> dict[str, np.ndarray]:
         """This episode's assist trace, one row per control step (empty when unused)."""

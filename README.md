@@ -33,6 +33,17 @@
 电机峰值 17 N·m 只能短时用，能一直出的只有 6 N·m。**处方 12 N·m 是峰值的七成，却是连续上限的两倍**：
 短时走没问题，长走会发热。
 
+## 四、发热
+
+<img src="docs/images/thermal.png" width="700" alt="绕组温度与可用力矩上限">
+
+驱动器一直要 17 N·m 的话，绕组从 25 °C 开始升，两分钟到 53 °C，能给的力矩从 17 掉到 **13.5 N·m**。
+而 12 N·m 的走路处方跑一分钟只升到 33.6 °C，按这个模型稳态约 59 °C，**不会触发热降额**。
+
+模型是一阶的：时间常数 175 s 由说明书两个点反推（6 N·m 无限、13 N·m 42 s），升温按力矩平方算，
+6 N·m 时稳态正好落在设定的 100 °C 绕组上限。温度在每次 reset 时回到室温，所以正常 15 秒的验收
+跑不出这个效应，要看长时间才看得到。
+
 ## 并排看
 
 左边不带电机，右边 12 N·m 辅助。同一机位、同一条时间轴：
@@ -62,6 +73,10 @@ python scripts/view_walk_exo.py
 # 重新生成下面三张图（数据在 docs/data/，一次 12 N·m 处方的 1500 步驱动日志）
 python scripts/make_figures.py
 
+# 跑一次热降额演示（120 秒、17 N·m）并出图
+python scripts/thermal_demo.py 120 thermal_run.json 17
+python scripts/make_thermal_figure.py --data thermal_run.json
+
 # 带电机、12 N·m 辅助的验收
 python scripts/eval_walk_exo.py --policy finetuned_cal070_a12.zip \
        --assist-torque 12 --assist-phase-lead 0.05 --strap-preload 50 \
@@ -83,9 +98,8 @@ scripts/                                        查看、验收、A/B、训练�
 
 ## 还没做的
 
-- **发热没建模**。上面说的"连续 6 N·m"是参数表上的额定值；这套仿真里没有温度状态，跑久了会不会
-  过热它回答不了。
-- 空载摩擦（关节上约 0.6 N·m）和电感没有建模。
+- 热模型只有时间常数来自说明书；100 °C 的绕组上限是按绝缘等级假设的，没有实测。
+- 空载摩擦（关节上约 0.6 N·m）和电感没有建模，电阻也没有随温度变化。
 - 电机参数取自厂家参数表，这个仿真本身不做真机测量。
 
 ---

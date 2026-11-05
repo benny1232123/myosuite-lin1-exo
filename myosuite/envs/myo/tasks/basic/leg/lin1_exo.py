@@ -203,8 +203,11 @@ class ExoMotorConfig:
         rotor_inertia: Rotor inertia at the motor shaft, kg·m²; MuJoCo reflects it onto the
             joint as ``gear_ratio**2 * rotor_inertia``, so it must not be doubled up.
         peak_joint_torque: Short-time torque the joint can deliver, N·m.
-        continuous_joint_torque: Sustained torque, N·m.  Recorded only: derating between the
-            two is the thermal model, which is off until the bench data exists.
+        continuous_joint_torque: Sustained torque the winding can hold, N·m; it is the
+            torque at which the first-order thermal model below settles at ``winding_max_C``.
+        ambient_C: Air temperature the cooling term pulls toward, °C.
+        winding_max_C: Winding temperature at which the drive derates to zero, °C.
+        thermal_time_constant_s: First-order heating time constant, s.
         inductance: Armature inductance, H, or ``None`` for an algebraic current.  With no
             inductance the electrical pole disappears and the current settles within one
             physics step, which is the right limit at millisecond control periods.
@@ -220,6 +223,9 @@ class ExoMotorConfig:
     rotor_inertia: float
     peak_joint_torque: float
     continuous_joint_torque: float
+    ambient_C: float = 25.0
+    winding_max_C: float = 100.0
+    thermal_time_constant_s: float = 175.0
     inductance: float | None = None
     cogging_torque: float = 0.0
     calibrated: bool = False
@@ -228,6 +234,7 @@ class ExoMotorConfig:
     def from_params(cls, params: dict[str, Any]) -> "ExoMotorConfig":
         """Build the config from the ``actuator`` block of the exoskeleton parameter file."""
         block = params["actuator"]
+        thermal = block.get("thermal") or {}
         return cls(
             bus_voltage=float(block["bus_voltage_V"]),
             gear_ratio=float(block["gear_ratio"]),
@@ -237,6 +244,9 @@ class ExoMotorConfig:
             rotor_inertia=float(block["rotor_inertia_kg_m2"]),
             peak_joint_torque=float(block["peak_joint_torque_Nm"]),
             continuous_joint_torque=float(block["continuous_joint_torque_Nm"]),
+            ambient_C=float(thermal.get("ambient_C", 25.0)),
+            winding_max_C=float(thermal.get("winding_max_C", 100.0)),
+            thermal_time_constant_s=float(thermal.get("time_constant_s", 175.0)),
             inductance=(None if block.get("inductance_H") is None
                         else float(block["inductance_H"])),
             cogging_torque=float(block.get("cogging_torque_Nm", 0.0)),
@@ -269,6 +279,29 @@ class ExoMotorConfig:
     def peak_current(self) -> float:
         """Motor current at the torque cap, A."""
         return self.rotor_torque_limit / self.torque_constant
+
+    def torque_cap(self, winding_temp_C: float) -> float:
+        """Joint torque the drive may still ask for at this winding temperature, N·m.
+
+        Heating goes as torque squared, so a steady torque carries the winding to
+        ``ambient + (tau / continuous)**2 * (max - ambient)``.  The cap is the largest torque
+        whose steady state would stay at ``winding_max_C``, referred back through the
+        peak/continuous ratio and never above the electrical peak: it returns the peak at
+        ambient and zero at ``winding_max_C``.
+        """
+        room = self.winding_max_C - self.ambient_C
+        if room <= 0.0:
+            return self.peak_joint_torque
+        head = float(np.clip((self.winding_max_C - winding_temp_C) / room, 0.0, 1.0))
+        ratio = self.peak_joint_torque / self.continuous_joint_torque
+        return min(self.peak_joint_torque, ratio * self.continuous_joint_torque * head ** 0.5)
+
+    def winding_after(self, torque: float, winding_temp_C: float, dt: float) -> float:
+        """Winding temperature after ``dt`` seconds at this joint torque, °C."""
+        room = self.winding_max_C - self.ambient_C
+        load = (abs(torque) / self.continuous_joint_torque) ** 2
+        rate = (load * room - (winding_temp_C - self.ambient_C)) / self.thermal_time_constant_s
+        return float(winding_temp_C + rate * dt)
 
     @property
     def stall_current(self) -> float:
